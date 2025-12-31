@@ -1,0 +1,11 @@
+scheme-basic
+tikz
+pgf
+xkeyval
+etoolbox
+standalone
+preview
+luatex
+# Add core fonts
+cm
+lm

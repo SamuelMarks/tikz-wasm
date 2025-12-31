@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install TeX Live
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y texlive-latex-base texlive-pictures texlive-latex-extra
+
+      - name: Install NPM Dependencies
+        run: npm install
+
+      - name: Setup Assets
+        run: npx tsx scripts/setup.ts
+
+      - name: Generate Format
+        run: |
+          TEX_DIST=$(kpsewhich -var-value=TEXMFDIST)
+          npx tsx scripts/build_fmt.ts "$TEX_DIST"
+
+      - name: Run Tests
+        run: npm test
+
+      - name: Build Bundle
+        run: npm run build

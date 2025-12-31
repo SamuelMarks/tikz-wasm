@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TikZ WASM Demo</title>
+    <style>
+        :root {
+            --bg-color: #f4f4f9;
+            --panel-bg: #ffffff;
+            --border-color: #ddd;
+            --primary-color: #3b82f6;
+            --text-color: #333;
+            --font-mono: 'Menlo', 'Monaco', 'Courier New', monospace;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 20px;
+            height: 100vh;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        h1 { margin: 0; font-size: 1.5rem; }
+        
+        #status {
+            font-size: 0.85rem;
+            color: #666;
+            font-family: var(--font-mono);
+        }
+
+        /* Layout */
+        .workspace {
+            display: flex;
+            flex-direction: row; /* Desktop default: Side by side */
+            gap: 20px;
+            flex: 1; /* Take remaining height */
+            min-height: 0; /* Prevent overflow issues */
+        }
+
+        .panel {
+            background: var(--panel-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            padding: 15px;
+            flex: 1;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+
+        /* Input Area */
+        .panel-header {
+            font-weight: bold;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        textarea {
+            flex: 1;
+            resize: none;
+            border: 1px solid var(--border-color);
+            background: #fafafa;
+            border-radius: 4px;
+            padding: 10px;
+            font-family: var(--font-mono);
+            font-size: 14px;
+            color: #2c3e50;
+            outline: none;
+        }
+
+        textarea:focus { border-color: var(--primary-color); }
+
+        button {
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: background 0.2s;
+        }
+
+        button:hover { background-color: #2563eb; }
+        button:disabled { background-color: #93c5fd; cursor: wait; }
+
+        /* Output Area */
+        #output-container {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: auto;
+            background-image: radial-gradient(#e5e7eb 1px, transparent 1px);
+            background-size: 20px 20px; /* Grid pattern */
+        }
+
+        svg {
+            max-width: 100%;
+            max-height: 100%;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            background: white;
+        }
+
+        .error { color: #dc2626; white-space: pre-wrap; font-family: var(--font-mono); font-size: 0.9rem; }
+
+        /* Mobile Layout */
+        @media (max-width: 768px) {
+            .workspace {
+                flex-direction: column;
+            }
+            .panel {
+                min-height: 300px; /* Ensure space on mobile */
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>TikZ WASM</h1>
+        <div id="status">Initializing...</div>
+    </header>
+
+    <div class="workspace">
+        <!-- Left / Top: Input -->
+        <div class="panel">
+            <div class="panel-header">
+                <span>LaTeX / TikZ Source</span>
+                <button id="render-btn" disabled>Render</button>
+            </div>
+            <textarea id="tikz-input" spellcheck="false">
+\begin{tikzpicture}
+  % Sun
+  \draw[fill=yellow!20, draw=orange, thick] (0,0) circle (1.5cm);
+  
+  % Rays
+  \foreach \angle in {0,30,...,330}
+    \draw[thick, orange] (\angle:1.7cm) -- (\angle:2.2cm);
+
+  % Face
+  \fill[black] (-0.5,0.3) circle (0.15cm);
+  \fill[black] (0.5,0.3) circle (0.15cm);
+  \draw[thick, red] (-0.5,-0.5) arc (180:360:0.5cm);
+
+  % Text
+  \node[font=\bfseries\sffamily, below] at (0,-2.5) {Hello WASM!};
+\end{tikzpicture}
+            </textarea>
+        </div>
+
+        <!-- Right / Bottom: Output -->
+        <div class="panel">
+            <div class="panel-header"><span>SVG Output</span></div>
+            <div id="output-container">
+                <em style="color:#999">Waiting for render...</em>
+            </div>
+        </div>
+    </div>
+
+    <!-- 
+      Loading the module from the build directory. 
+      Ensure you run `npm run build` first! 
+    -->
+    <script type="module">
+        import { initTikz, renderTikzAsSvg } from './dist/tikz-wasm.es.js';
+
+        const statusEl = document.getElementById('status');
+        const btnFn = document.getElementById('render-btn');
+        const inputEl = document.getElementById('tikz-input');
+        const outputEl = document.getElementById('output-container');
+
+        let isReady = false;
+
+        // 1. Initialize the library
+        async function boot() {
+            try {
+                await initTikz();
+                isReady = true;
+                statusEl.innerText = "Ready";
+                statusEl.style.color = "green";
+                btnFn.disabled = false;
+                
+                // Initial render
+                render();
+            } catch (e) {
+                console.error(e);
+                statusEl.innerText = "Initialization Failed";
+                statusEl.style.color = "red";
+                outputEl.innerHTML = `<div class="error">${e.message}</div>`;
+            }
+        }
+
+        // 2. Render Function
+        async function render() {
+            if (!isReady) return;
+            
+            const code = inputEl.value;
+            statusEl.innerText = "Rendering...";
+            btnFn.disabled = true;
+            outputEl.innerHTML = '<em style="color:#999">Compiling...</em>';
+
+            try {
+                // Call the SDK
+                const svg = await renderTikzAsSvg(code);
+                outputEl.innerHTML = svg;
+                statusEl.innerText = "Render Complete";
+            } catch (e) {
+                console.error(e);
+                statusEl.innerText = "Error";
+                // Show logs if available in error object
+                const details = e.logs ? e.logs.join('\n') : e.message;
+                outputEl.innerHTML = `<div class="error">Compilation Failed:\n\n${details}</div>`;
+            } finally {
+                btnFn.disabled = false;
+            }
+        }
+
+        btnFn.addEventListener('click', render);
+
+        // Start
+        boot();
+    </script>
+</body>
+</html>
