@@ -3,34 +3,25 @@ name: Release TikZ WASM
 on:
   push:
     tags:
-      - 'v*' # Trigger on version tags (e.g., v1.0.0)
-  workflow_dispatch: # Allow manual runs
+      - 'v*'
 
 permissions:
-  contents: write # For creating Releases and uploading assets
-  packages: write # For GHCR if needed (optional)
-  id-token: write # For Provenance/NPM publishing
+  contents: write
+  packages: write
+  id-token: write
 
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Use Node.js LTS
+        uses: actions/setup-node@v6
         with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
-          cache: 'npm'
+          node-version: lts/*
 
-      # -----------------------------------------------------------------------
-      # 1. INSTALL SYSTEM DEPENDENCIES
-      # -----------------------------------------------------------------------
-      # We install specific TeX Live packages required to compile TikZ formats.
-      # This is faster than installing texlive-full.
       - name: Install TeX Live Dependencies
         run: |
           sudo apt-get update
@@ -38,67 +29,51 @@ jobs:
             texlive-latex-base \
             texlive-pictures \
             texlive-latex-extra \
-            texlive-binaries \
-            kpsewhich
+            texlive-binaries
 
-      # -----------------------------------------------------------------------
-      # 2. INSTALL PROJECT DEPENDENCIES
-      # -----------------------------------------------------------------------
       - name: Install NPM Dependencies
-        run: npm install
+        run: npm ci
 
-      # -----------------------------------------------------------------------
-      # 3. ASSET ACQUISITION & FORMAT GENERATION
-      # -----------------------------------------------------------------------
-      
-      # Downloads upstream WASM and patches the glue code (Deliverable 1)
       - name: Fetch Upstream WASM
         run: npx tsx scripts/setup.ts
 
-      # Locates the TeX distribution on the runner
       - name: Detect TeX Root
         id: texroot
         run: |
           TEX_DIST=$(kpsewhich -var-value=TEXMFDIST)
-          echo "Detected TeX Dist at $TEX_DIST"
           echo "tex_dist=$TEX_DIST" >> $GITHUB_OUTPUT
 
-      # Runs the generator logic inside the mock Node environment (Deliverable 2)
       - name: Generate tikz.fmt
         run: npx tsx scripts/build_fmt.ts "${{ steps.texroot.outputs.tex_dist }}"
 
-      # -----------------------------------------------------------------------
-      # 4. BUILD & TEST
-      # -----------------------------------------------------------------------
-      
       - name: Run Tests
         run: npm test
 
-      # Bundles JS, inlining the .wasm and .fmt files created in Step 3 (Deliverable 3)
       - name: Build Bundle
         run: npm run build
 
-      - name: Create NPM Packet
-        run: npm pack
-
-      # -----------------------------------------------------------------------
-      # 5. PUBLISH
-      # -----------------------------------------------------------------------
+      # Create the tarball and capture the filename
+      - name: Pack to TGZ
+        id: pack
+        run: |
+          PACK_NAME=$(npm pack)
+          echo "tarball_name=$PACK_NAME" >> $GITHUB_OUTPUT
 
       - name: Upload Release Assets (GitHub)
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: |
+            ${{ steps.pack.outputs.tarball_name }}
             dist/*
-            *.tgz
             src/assets/tex.wasm
             src/assets/tikz.fmt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Publish the specific tarball created above to avoid rebuilding
       - name: Publish to NPM
         if: startsWith(github.ref, 'refs/tags/')
-        run: npm publish --access public
+        run: npm publish "${{ steps.pack.outputs.tarball_name }}" --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

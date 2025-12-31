@@ -2,36 +2,39 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+    branches: [ master ]
 
 jobs:
   build-check:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Use Node.js LTS
+        uses: actions/setup-node@v6
         with:
-          node-version: '20'
-          cache: 'npm'
+          node-version: lts/*
 
+      # Standardized TeX install (Same as Release)
       - name: Install TeX Live
         run: |
           sudo apt-get update
-          sudo apt-get install -y texlive-latex-base texlive-pictures texlive-latex-extra
+          sudo apt-get install -y \
+            texlive-latex-base \
+            texlive-pictures \
+            texlive-latex-extra \
+            texlive-binaries
 
       - name: Install NPM Dependencies
-        run: npm install
+        run: npm ci # Use 'ci' instead of 'install' for deterministic builds
 
       - name: Setup Assets
         run: npx tsx scripts/setup.ts
 
       - name: Generate Format
         run: |
+          # Use the kpsewhich provided by texlive-binaries
           TEX_DIST=$(kpsewhich -var-value=TEXMFDIST)
           npx tsx scripts/build_fmt.ts "$TEX_DIST"
 

@@ -1,6 +1,7 @@
 TikZ WASM
 =========
 [![License](https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![.github/workflows/ci.yml](https://github.com/SamuelMarks/tikz-wasm/actions/workflows/ci.yml/badge.svg)](https://github.com/SamuelMarks/tikz-wasm/actions/workflows/ci.yml)
 
 A specialized, dependency-free TypeScript library for compiling LaTeX TikZ graphics directly in the browser via
 WebAssembly.
@@ -114,7 +115,7 @@ local TeX installation before bundling the JavaScript.
 ### Prerequisites
 
 1. **Node.js 20+**
-2. **TeX Live Distribution**: The build scripts require `kpsewhich` and a standard TeX directory structure to locate
+2. **TeX Live Distribution**: The build scripts require [`kpsewhich`](https://www.tug.org/texinfohtml/kpathsea.html) and a standard TeX directory structure to locate
    PGF/TikZ macros during the asset generation phase.
 
 ### Build Steps
