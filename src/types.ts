@@ -3,12 +3,14 @@
  */
 
 export interface EmscriptenFS {
-  writeFile(path: string, data: string | Uint8Array): void;
-  readFile(path: string): Uint8Array;
+  writeFile(path: string, data: string | Uint8Array, opts?: { encoding?: string; flags?: string }): void;
+  readFile(path: string, opts: { encoding: 'utf8' }): string;
+  readFile(path: string, opts?: { encoding?: string; flags?: string }): Uint8Array;
   unlink(path: string): void;
   mkdir(path: string): void;
-  stat(path: string): { mode: number };
+  stat(path: string): { mode: number; size: number };
   isDir(mode: number): boolean;
+  mount(type: any, opts: any, mountpoint: string): void;
 }
 
 // Alias for VFS compatibility
@@ -16,9 +18,15 @@ export type IEmscriptenFS = EmscriptenFS;
 
 export interface EmscriptenModule {
   FS: EmscriptenFS;
+  // SwiftLaTeX specific: callMain usually maps to the underlying C main
   callMain(args: string[]): number;
+
+  // Standard Emscripten hooks
   print?: (msg: string) => void;
   printErr?: (msg: string) => void;
+
+  // Dynamic memory access (optional usage)
+  HEAPU8?: Uint8Array;
 }
 
 export type EmscriptenModuleFactory = (overrides?: Partial<EmscriptenModule>) => Promise<EmscriptenModule>;
@@ -58,12 +66,12 @@ export interface DviFont {
 }
 
 export interface MachineState {
-  h: number; // Horizontal position
-  v: number; // Vertical position
-  w: number; // Horizontal spacer
-  x: number; // Horizontal spacer
-  y: number; // Vertical spacer
-  z: number; // Vertical spacer
+  h: number;
+  v: number;
+  w: number;
+  x: number;
+  y: number;
+  z: number;
   fontId: number;
 }
 

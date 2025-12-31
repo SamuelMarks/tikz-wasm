@@ -9,7 +9,7 @@ import { TikzCompiler } from '../src/compiler';
 const mockCreateObjectURL = vi.fn(() => "blob:http://localhost/mock-uuid");
 (globalThis as any).URL.createObjectURL = mockCreateObjectURL;
 
-// Mock Blob
+// Mock Blob using a real class structure to be safe
 class MockBlob {
   content: any[];
   options: any;
@@ -20,12 +20,14 @@ class MockBlob {
 }
 (globalThis as any).Blob = MockBlob;
 
-// Mock Compiler
+// --- FIX: Use standard function for constructor mock ---
 vi.mock('../src/compiler', () => {
   return {
-    TikzCompiler: vi.fn().mockImplementation(() => ({
-      terminate: vi.fn()
-    }))
+    TikzCompiler: vi.fn().mockImplementation(function () {
+      return {
+        terminate: vi.fn()
+      };
+    })
   };
 });
 
@@ -41,12 +43,9 @@ describe('CompilerPool (Inline Worker)', () => {
 
   it('should instantiate TikzCompiler with a Blob URL created from inline code', () => {
     const compiler = getCompiler();
-    
+
     expect(compiler).toBeDefined();
-    
-    // Verify Blob creation
-    // We can't easily spy on the constructor directly without proxy, but we can verify side effects
-    
+
     // Verify URL creation
     expect(mockCreateObjectURL).toHaveBeenCalledWith(expect.any(MockBlob));
     const invalidBlob = mockCreateObjectURL.mock.calls[0][0] as MockBlob;
@@ -83,9 +82,9 @@ describe('CompilerPool (Inline Worker)', () => {
     // Sabotage Blob
     const originalBlob = (globalThis as any).Blob;
     (globalThis as any).Blob = function() { throw new Error("Blob Error"); };
-    
+
     expect(() => getCompiler()).toThrow(/Could not spawn TikZ Worker/);
-    
+
     (globalThis as any).Blob = originalBlob;
   });
 });

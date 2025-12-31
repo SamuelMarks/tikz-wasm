@@ -1,7 +1,7 @@
 import type { EmscriptenModule, EmscriptenModuleFactory } from './types.js';
 
 /**
- * TeXBridge orchestrates the interactions between JS memory and the 
+ * TeXBridge orchestrates the interactions between JS memory and the
  * Emscripten-compiled TeX WASM binary.
  */
 export class TeXBridge {
@@ -11,11 +11,15 @@ export class TeXBridge {
   /**
    * Initializes the WASM module.
    * @param factory The factory function provided by the auto-generated Emscripten JS.
+   * @param wasmBinary The raw Uint8Array of the .wasm file.
    */
-  async init(factory: EmscriptenModuleFactory): Promise<void> {
+  async init(factory: EmscriptenModuleFactory, wasmBinary?: Uint8Array): Promise<void> {
+    // SwiftLaTeX/Emscripten usually takes 'wasmBinary' in the config object
+    // to bypass automatic HXR fetching.
     this.module = await factory({
       print: (msg: string) => this.logs.push(msg),
       printErr: (msg: string) => this.logs.push(`ERR: ${msg}`),
+      ...(wasmBinary ? { wasmBinary } : {})
     });
   }
 
@@ -37,13 +41,21 @@ export class TeXBridge {
   runTeX(inputFilename: string): boolean {
     this.ensureInitialized();
     this.logs = []; // Reset logs for this run
-    
-    // Safety: wrap in try/catch as callMain might throw on fatal errors (exit)
+
     try {
-      // In TeX, usually inputs are just passed as arguments
-      const exitCode = this.module!.callMain([inputFilename]);
+      // SwiftLaTeX acts as a PDFTeX engine.
+      // We pass specific flags to ensure we don't drop to shell or interaction mode.
+      const exitCode = this.module!.callMain([
+        '-interaction=nonstopmode',
+        '-halt-on-error',
+        inputFilename
+      ]);
       return exitCode === 0;
     } catch (e) {
+      // Emscripten treats exit(1) as an exception in some configurations
+      if (e instanceof Error && e.message.includes('status: 1')) {
+        return false;
+      }
       this.logs.push(`CRITICAL: WASM Exception: ${e}`);
       return false;
     }
@@ -58,7 +70,7 @@ export class TeXBridge {
   readFile(filename: string): Uint8Array {
     this.ensureInitialized();
     try {
-      return this.module!.FS.readFile(filename);
+      return this.module!.FS.readFile(filename, { encoding: undefined });
     } catch {
       throw new Error(`File ${filename} not found in VFS`);
     }
@@ -69,6 +81,11 @@ export class TeXBridge {
    */
   getLogs(): string[] {
     return [...this.logs];
+  }
+
+  getFS() {
+    this.ensureInitialized();
+    return this.module!.FS;
   }
 
   private ensureInitialized(): void {

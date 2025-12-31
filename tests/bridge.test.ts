@@ -4,12 +4,16 @@ import type { EmscriptenModule, EmscriptenModuleFactory } from '../src/types';
 
 describe('TeXBridge', () => {
   let bridge: TeXBridge;
-  
+
   // Mock FS
   const mockFS = {
     writeFile: vi.fn(),
     readFile: vi.fn(),
-    unlink: vi.fn()
+    unlink: vi.fn(),
+    mkdir: vi.fn(),
+    stat: vi.fn(),
+    isDir: vi.fn(),
+    mount: vi.fn()
   };
 
   // Mock Module
@@ -48,15 +52,23 @@ describe('TeXBridge', () => {
     expect(mockFS.writeFile).toHaveBeenCalledWith('input.tex', 'hello');
   });
 
-  it('should run TeX and capture success', async () => {
+  it('should run TeX and capture success with default flags', async () => {
     await bridge.init(mockFactory);
     const success = bridge.runTeX('input.tex');
-    expect(mockModule.callMain).toHaveBeenCalledWith(['input.tex']);
+
+    // Updated expectation: The bridge now passes flags for non-interactive mode
+    expect(mockModule.callMain).toHaveBeenCalledWith([
+      '-interaction=nonstopmode',
+      '-halt-on-error',
+      'input.tex'
+    ]);
     expect(success).toBe(true);
   });
 
   it('should handle TeX errors (non-zero exit)', async () => {
-    mockModule.callMain = vi.fn(() => 1); // Error code
+    // Mock return of 1
+    mockModule.callMain = vi.fn(() => 1);
+
     await bridge.init(mockFactory);
     const success = bridge.runTeX('fail.tex');
     expect(success).toBe(false);
@@ -73,15 +85,16 @@ describe('TeXBridge', () => {
   it('should read files from VFS', async () => {
     await bridge.init(mockFactory);
     const fakeData = new Uint8Array([1, 2, 3]);
-    mockFS.readFile = vi.fn(() => fakeData);
-    
+    // Types align with the interface mock
+    mockFS.readFile = vi.fn(() => fakeData) as any;
+
     const result = bridge.readFile('out.dvi');
     expect(result).toBe(fakeData);
   });
 
   it('should throw if reading missing file', async () => {
     await bridge.init(mockFactory);
-    mockFS.readFile = vi.fn(() => { throw new Error(); });
+    mockFS.readFile = vi.fn(() => { throw new Error(); }) as any;
     expect(() => bridge.readFile('missing')).toThrow(/not found/);
   });
 });

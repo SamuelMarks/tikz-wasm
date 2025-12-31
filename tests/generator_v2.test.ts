@@ -12,8 +12,11 @@ const mockBridge = {
   readFile: vi.fn()
 };
 
+// --- FIX: Use standard function so 'new TeXFileLoader()' works ---
 vi.mock('../src/file-loader', () => ({
-  TeXFileLoader: vi.fn(() => mockLoader)
+  TeXFileLoader: vi.fn().mockImplementation(function() {
+    return mockLoader;
+  })
 }));
 
 vi.mock('node:fs/promises', () => ({
@@ -40,7 +43,7 @@ describe('FormatGenerator (Updated)', () => {
     // Check the call to write ini_tikz.tex
     const writeCalls = mockBridge.writeFile.mock.calls;
     const iniCall = writeCalls.find((call: any[]) => call[0] === 'ini_tikz.tex');
-    
+
     expect(iniCall).toBeDefined();
     expect(iniCall[1]).toContain('\\pdfoutput=0');
     expect(iniCall[1]).toContain('\\input tikz.tex');

@@ -2,9 +2,14 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { unpackAsset } from '../src/runtime';
 
 const mockArrayBuffer = new ArrayBuffer(8);
-const mockResponse = {
-  arrayBuffer: vi.fn().mockResolvedValue(mockArrayBuffer)
-};
+
+// --- FIX: Use a class for Response mock ---
+class MockResponse {
+  constructor(_stream: any) {}
+  async arrayBuffer() {
+    return mockArrayBuffer;
+  }
+}
 
 const mockDecompressionStream = vi.fn();
 
@@ -16,10 +21,10 @@ const originalAtob = globalThis.atob;
 describe('Runtime: unpackAsset', () => {
   beforeEach(() => {
     globalThis.DecompressionStream = mockDecompressionStream as any;
-    globalThis.Response = vi.fn().mockImplementation(() => mockResponse) as any;
+    globalThis.Response = MockResponse as any; // Assign class directly
+
     globalThis.Blob = class {
       constructor(parts: any[]) {
-        // Capture specific test logic logic if needed or valid stub
         (this as any).parts = parts;
       }
       stream() {
@@ -28,7 +33,7 @@ describe('Runtime: unpackAsset', () => {
         };
       }
     } as any;
-    globalThis.atob = vi.fn((str) => str); 
+    globalThis.atob = vi.fn((str) => str);
   });
 
   afterEach(() => {
@@ -45,7 +50,7 @@ describe('Runtime: unpackAsset', () => {
 
     expect(globalThis.atob).toHaveBeenCalledWith(input);
     expect(mockDecompressionStream).toHaveBeenCalledWith('gzip');
-    expect(mockResponse.arrayBuffer).toHaveBeenCalled();
+    // Response.arrayBuffer() logic is verified by the result check below
     expect(result).toBeInstanceOf(Uint8Array);
     expect(result.buffer).toBe(mockArrayBuffer);
   });
@@ -54,7 +59,7 @@ describe('Runtime: unpackAsset', () => {
     // @ts-ignore
     delete globalThis.DecompressionStream;
     await expect(unpackAsset("data"))
-      .rejects.toThrow(/Browser does not support DecompressionStream/);
+        .rejects.toThrow(/Browser does not support DecompressionStream/);
   });
 
   it('should correctly map binary string to Uint8Array', async () => {
@@ -67,7 +72,7 @@ describe('Runtime: unpackAsset', () => {
       stream() { return { pipeThrough: () => {} }; }
     } as any;
 
-    globalThis.atob = (s) => s; 
+    globalThis.atob = (s) => s;
 
     await unpackAsset('ABC');
 
