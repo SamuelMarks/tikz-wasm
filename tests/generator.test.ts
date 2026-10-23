@@ -51,7 +51,7 @@ describe('FormatGenerator', () => {
   it('should load trees, write ini_tikz.tex with pdfoutput=0 and dvisvgm driver, run TeX, and write fmt', async () => {
     await generator.generate('./out.fmt');
 
-    expect(mockGlob).toHaveBeenCalledTimes(8);
+    expect(mockGlob).toHaveBeenCalledTimes(17);
     expect(mockBridge.writeFile).toHaveBeenCalledWith(
       '/texmf/tex/latex/tikz/tikz.sty',
       expect.any(Buffer)
@@ -90,7 +90,7 @@ describe('TeXFileLoader', () => {
     vi.clearAllMocks();
   });
 
-  it('should scan all 8 essential trees and normalize Windows backslashes', async () => {
+  it('should scan all 17 essential trees and normalize Windows backslashes', async () => {
     mockGlob
       .mockResolvedValueOnce([String.raw`tex\generic\pgf\pgf.tex`])
       .mockResolvedValue([]);
@@ -99,7 +99,7 @@ describe('TeXFileLoader', () => {
     const loader = new TeXFileLoader('/root');
     const vfs = await loader.loadEssentialTrees();
 
-    expect(mockGlob).toHaveBeenCalledTimes(8);
+    expect(mockGlob).toHaveBeenCalledTimes(17);
     expect(vfs.size).toBe(1);
     expect(vfs.get('/texmf/tex/generic/pgf/pgf.tex')).toEqual(Buffer.from('pgf-content'));
   });

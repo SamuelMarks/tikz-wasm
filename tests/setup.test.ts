@@ -72,8 +72,76 @@ describe('Scripts: setup.ts', () => {
     });
   });
 
-  describe('downloadFile', () => {
-    it('should fetch and write file to disk', async () => {
+  describe('extractZipEntry & downloadFile', () => {
+    /**
+     * Builds a minimal synthetic ZIP archive buffer with a single entry.
+     *
+     * @param name - Entry filename inside the ZIP.
+     * @param data - Compressed or uncompressed payload bytes.
+     * @param method - Compression method (`0` = store, `8` = deflate, `99` = unsupported).
+     * @returns Complete ZIP file buffer.
+     */
+    function buildMinimalZip(name: string, data: Buffer, method: number): Buffer {
+      const nameBuf = Buffer.from(name, 'utf8');
+      const localHeader = Buffer.alloc(30 + nameBuf.length);
+      localHeader.writeUInt32LE(0x04034b50, 0);
+      localHeader.writeUInt16LE(method, 8);
+      localHeader.writeUInt32LE(data.length, 18);
+      localHeader.writeUInt32LE(data.length, 22);
+      localHeader.writeUInt16LE(nameBuf.length, 26);
+      localHeader.writeUInt16LE(0, 28);
+      nameBuf.copy(localHeader, 30);
+
+      const cdHeader = Buffer.alloc(46 + nameBuf.length);
+      cdHeader.writeUInt32LE(0x02014b50, 0);
+      cdHeader.writeUInt16LE(method, 10);
+      cdHeader.writeUInt32LE(data.length, 20);
+      cdHeader.writeUInt32LE(data.length, 24);
+      cdHeader.writeUInt16LE(nameBuf.length, 28);
+      cdHeader.writeUInt16LE(0, 30);
+      cdHeader.writeUInt16LE(0, 32);
+      cdHeader.writeUInt32LE(0, 42);
+      nameBuf.copy(cdHeader, 46);
+
+      const cdOffset = localHeader.length + data.length;
+      const eocd = Buffer.alloc(22);
+      eocd.writeUInt32LE(0x06054b50, 0);
+      eocd.writeUInt16LE(1, 8);
+      eocd.writeUInt16LE(1, 10);
+      eocd.writeUInt32LE(cdHeader.length, 12);
+      eocd.writeUInt32LE(cdOffset, 16);
+
+      return Buffer.concat([localHeader, data, cdHeader, eocd]);
+    }
+
+    it('should extract stored (method 0) and deflated (method 8) ZIP entries', async () => {
+      const zlib = await import('node:zlib');
+      const rawPayload = Buffer.from('hello-wasm-payload');
+      const storedZip = buildMinimalZip('nested/swiftlatexpdftex.wasm', rawPayload, 0);
+      expect(setup.extractZipEntry(storedZip, 'swiftlatexpdftex.wasm')).toEqual(rawPayload);
+
+      const deflatedPayload = zlib.deflateRawSync(rawPayload);
+      const deflatedZip = buildMinimalZip('swiftlatexpdftex.js', deflatedPayload, 8);
+      expect(setup.extractZipEntry(deflatedZip, 'swiftlatexpdftex.js')).toEqual(rawPayload);
+    });
+
+    it('should throw on invalid ZIP, missing entry, or unsupported compression method', () => {
+      expect(() => setup.extractZipEntry(Buffer.alloc(30), 'foo.wasm')).toThrow(
+        'Invalid ZIP archive when extracting foo.wasm'
+      );
+
+      const zip = buildMinimalZip('other.txt', Buffer.from('abc'), 0);
+      expect(() => setup.extractZipEntry(zip, 'missing.wasm')).toThrow(
+        'Entry missing.wasm not found in ZIP archive'
+      );
+
+      const badMethodZip = buildMinimalZip('bad.wasm', Buffer.from('abc'), 99);
+      expect(() => setup.extractZipEntry(badMethodZip, 'bad.wasm')).toThrow(
+        'Unsupported ZIP compression method 99 for bad.wasm'
+      );
+    });
+
+    it('should fetch and write raw file or extract ZIP entry to disk', async () => {
       globalThis.fetch = vi.fn().mockResolvedValue({
         ok: true,
         arrayBuffer: async () => new ArrayBuffer(8),
@@ -85,6 +153,19 @@ describe('Scripts: setup.ts', () => {
 
       expect(globalThis.fetch).toHaveBeenCalledWith('http://example.com/file');
       expect(mockWriteFileSync).toHaveBeenCalledWith('/local/file', expect.any(Buffer));
+
+      const expectedContent = Buffer.from('zip-extracted-bytes');
+      const zipBuf = buildMinimalZip('swiftlatexpdftex.wasm', expectedContent, 0);
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        arrayBuffer: async () =>
+          zipBuf.buffer.slice(zipBuf.byteOffset, zipBuf.byteOffset + zipBuf.byteLength),
+        statusText: 'OK',
+        status: 200,
+      } as unknown as Response);
+
+      await setup.downloadFile('http://example.com/archive.zip', '/local/tex.wasm', 'swiftlatexpdftex.wasm');
+      expect(mockWriteFileSync).toHaveBeenLastCalledWith('/local/tex.wasm', expectedContent);
     });
 
     it('should throw on non-ok HTTP response', async () => {
@@ -131,7 +212,7 @@ describe('Scripts: setup.ts', () => {
   });
 
   describe('patchGlueCode', () => {
-    it('should wrap Emscripten glue code in TikZModuleFactory Promise', () => {
+    it('should wrap Emscripten glue code in TikZModuleFactory Promise and strip SwiftLaTeX pre.js when present', () => {
       const raw = 'var Module=typeof Module!="undefined"?Module:{}; const f = require("fs");';
       const output = setup.patchGlueCode(raw);
 
@@ -139,6 +220,12 @@ describe('Scripts: setup.ts', () => {
       expect(output).toContain('return new Promise');
       expect(output).toContain('var Module = moduleOverrides || {};');
       expect(output).toContain('const f = {};');
+
+      const withPreJs =
+        'self.onmessage=function(){};var moduleOverrides=Object.assign({},Module);scriptDirectory=__dirname+"/";';
+      const strippedOutput = setup.patchGlueCode(withPreJs);
+      expect(strippedOutput).not.toContain('self.onmessage=function(){}');
+      expect(strippedOutput).toContain('scriptDirectory=""');
     });
   });
 
@@ -160,6 +247,24 @@ describe('Scripts: setup.ts', () => {
         expect.stringContaining('export default function TikZModuleFactory')
       );
       expect(mockUnlinkSync).toHaveBeenCalled();
+    });
+
+    it('should warn when ASSET_URLS.wasm uses placeholder URL', async () => {
+      const originalWasmUrl = setup.ASSET_URLS.wasm;
+      setup.ASSET_URLS.wasm = 'https://github.com/USER/REPO/releases/download/v1/pdftex.wasm';
+      mockExistsSync.mockReturnValue(true);
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        arrayBuffer: async () => new ArrayBuffer(4),
+      } as unknown as Response);
+      mockReadFileSync.mockReturnValue('var Glue = true;');
+
+      await setup.main([]);
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining('WARNING: Using placeholder URLs')
+      );
+
+      setup.ASSET_URLS.wasm = originalWasmUrl;
     });
 
     it('should execute --local workflow and skip patching if temp_glue.js does not exist', async () => {

@@ -3,3 +3,6 @@
 node_modules
 dist
 coverage
+src/assets/tex.wasm
+src/assets/tex_glue.js
+src/assets/tikz.fmt

@@ -53,11 +53,30 @@ export class FormatGenerator {
 
     console.log('3. Configuring TeX for INI mode...');
     const iniSource = [
+      String.raw`\catcode` + '`\\{=1',
+      String.raw`\catcode` + '`\\}=2',
+      String.raw`\input plain.tex`,
       String.raw`\pdfoutput=0`,
+      String.raw`\nopagenumbers`,
+      String.raw`\catcode` + '`\\@=11',
+      String.raw`\let\@@end\end`,
+      String.raw`\catcode` + '`\\@=12',
       PGF_DRIVER_DEF,
       String.raw`\input tikz.tex`,
+      String.raw`\catcode` + '`\\@=11',
+      String.raw`\def\documentclass{\pgfutil@ifnextchar[\@documentclass\@@documentclass}`,
+      String.raw`\def\@documentclass[#1]#2{}`,
+      String.raw`\def\@@documentclass#1{}`,
+      String.raw`\def\usepackage{\pgfutil@ifnextchar[\@usepackage\@@usepackage}`,
+      String.raw`\def\@usepackage[#1]#2{}`,
+      String.raw`\def\@@usepackage#1{}`,
+      String.raw`\def\begin#1{\csname #1\endcsname}`,
+      String.raw`\def\end#1{\csname end#1\endcsname}`,
+      String.raw`\def\document{\endlinechar=13\relax}`,
+      String.raw`\def\enddocument{\vfill\supereject\@@end}`,
+      String.raw`\catcode` + '`\\@=12',
       String.raw`\dump`,
-      String.raw`\end`,
+      String.raw`\@@end`,
     ].join(String.fromCharCode(10));
     this.bridge.writeFile('ini_tikz.tex', iniSource);
 

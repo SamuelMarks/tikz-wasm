@@ -36,14 +36,23 @@ export class TeXFileLoader {
     const vfs = new Map<string, Buffer>();
 
     const patterns = [
+      'tex/plain/base/**/*',
+      'tex/plain/pgf/**/*',
+      'tex/generic/hyphen/**/*',
       'tex/generic/pgf/**/*',
+      'tex/generic/atbegshi/**/*',
+      'tex/generic/infwarerr/**/*',
+      'tex/generic/ltxcmds/**/*',
+      'tex/generic/iftex/**/*',
+      'tex/generic/oberdiek/**/*',
+      'tex/generic/xkeyval/**/*',
       'tex/latex/pgf/**/*',
       'tex/latex/tikz/**/*',
       'tex/latex/base/**/*',
       'tex/latex/l3kernel/**/*',
       'tex/latex/tools/**/*',
-      'tex/generic/xkeyval/**/*',
       'fonts/tfm/public/cm/**/*',
+      'fonts/tfm/public/knuth-lib/**/*',
     ];
 
     for (const pattern of patterns) {
