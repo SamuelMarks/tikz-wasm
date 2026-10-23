@@ -1,18 +1,67 @@
+/**
+ * Web Worker entrypoint executing the Emscripten TeX engine (`TeXBridge`) off the main thread.
+ *
+ * @packageDocumentation
+ */
+
 import { TeXBridge } from './bridge.js';
+import { VfsManager } from './vfs.js';
 import type { CompileJob, CompileResult, EmscriptenModuleFactory } from './types.js';
 
-const bridge = new TeXBridge();
-let initialized = false;
-
-// The Bundle setup (via index.ts) attaches these binaries to global scope
-declare global {
-  var TikZModuleFactory: EmscriptenModuleFactory;
-  var TIKZ_WASM_BINARY: Uint8Array;
-  var TIKZ_FMT_BINARY: Uint8Array;
+/**
+ * Global worker scope interface holding the Emscripten factory and binary assets.
+ */
+export interface WorkerGlobalScope {
+  /**
+   * Emscripten module factory function.
+   */
+  TikZModuleFactory?: EmscriptenModuleFactory;
+  /**
+   * Unpacked `tex.wasm` binary buffer.
+   */
+  TIKZ_WASM_BINARY?: Uint8Array;
+  /**
+   * Unpacked `tikz.fmt` format dump buffer.
+   */
+  TIKZ_FMT_BINARY?: Uint8Array;
+  /**
+   * Sends a message back to the main thread.
+   *
+   * @param message - The compilation result payload.
+   */
+  postMessage: (message: CompileResult) => void;
+  /**
+   * Incoming message handler assigned by the worker entrypoint.
+   *
+   * @param event - The incoming message event from the main thread.
+   */
+  onmessage?: ((event: MessageEvent<CompileJob>) => Promise<void>) | null;
 }
 
-self.onmessage = async (e: MessageEvent<CompileJob>) => {
-  const { id, source } = e.data;
+let bridge = new TeXBridge();
+let initialized = false;
+
+/**
+ * Resets the internal worker state and replaces the {@link TeXBridge} instance (used for testing).
+ *
+ * @param customBridge - Optional custom {@link TeXBridge} instance.
+ */
+export function resetWorkerState(customBridge?: TeXBridge): void {
+  bridge = customBridge ?? new TeXBridge();
+  initialized = false;
+}
+
+/**
+ * Processes a single {@link CompileJob} message inside the Web Worker and posts the {@link CompileResult}.
+ *
+ * @param e - Incoming `MessageEvent` containing the {@link CompileJob}.
+ * @param scope - Worker global scope (defaults to `globalThis`).
+ */
+export async function handleWorkerMessage(
+  e: MessageEvent<CompileJob>,
+  scope: WorkerGlobalScope = globalThis as unknown as WorkerGlobalScope
+): Promise<void> {
+  const { id, source, wasmBinary, fmtBinary } = e.data;
   const result: CompileResult = {
     id,
     success: false,
@@ -21,53 +70,48 @@ self.onmessage = async (e: MessageEvent<CompileJob>) => {
 
   try {
     if (!initialized) {
-      if (typeof self.TikZModuleFactory !== 'function') {
+      if (typeof scope.TikZModuleFactory !== 'function') {
         throw new Error('WASM Module Factory not found.');
       }
-      if (!self.TIKZ_WASM_BINARY) {
+      const effectiveWasm = wasmBinary ?? scope.TIKZ_WASM_BINARY;
+      if (!effectiveWasm) {
         throw new Error('WASM Binary not loaded in worker global scope.');
       }
 
-      // Pass the binary to the bridge to avoid fetching inside worker
-      await bridge.init(self.TikZModuleFactory, self.TIKZ_WASM_BINARY);
+      await bridge.init(scope.TikZModuleFactory, effectiveWasm);
 
-      // Load the Format File immediately after init
-      if (self.TIKZ_FMT_BINARY) {
-        // We write to 'tikz.fmt' because our engine invocation defaults to this name based on executable name usually,
-        // or we pass it explicitly.
-        // Usually, the engine looks for {jobname}.fmt or standard tikz.fmt in local dir.
-        bridge.writeFile('tikz.fmt', self.TIKZ_FMT_BINARY);
+      const vfs = new VfsManager(bridge.getFS());
+      vfs.bootstrap();
+
+      const effectiveFmt = fmtBinary ?? scope.TIKZ_FMT_BINARY;
+      if (effectiveFmt) {
+        bridge.writeFile('tikz.fmt', effectiveFmt);
       }
 
       initialized = true;
     }
 
-    // 1. Write Input
     bridge.writeFile('input.tex', source);
 
-    // 2. Run Engine
-    // Note: SwiftLaTeX might output PDF by default.
-    // The Input usually contains \pdfoutput=0, OR we pass flags if possible.
-    // But standard tex command line args handling applies.
-    // We rely on the input file's preamble to set output mode, or the custom format file.
     const success = bridge.runTeX('input.tex');
 
-    // 3. Harvest Result
     result.logs = bridge.getLogs();
     result.success = success;
 
     if (success) {
-      // .dvi output
       result.dvi = bridge.readFile('input.dvi');
     }
-
-  } catch (err: any) {
-    result.error = err.message || 'Unknown Worker Error';
-    // Capture logs even on crash if available
-    if (bridge) {
-      result.logs = [...bridge.getLogs(), `CRITICAL: ${result.error}`];
-    }
+  } catch (err: unknown) {
+    result.error = err instanceof Error && err.message ? err.message : 'Unknown Worker Error';
+    result.logs = [...bridge.getLogs(), `CRITICAL: ${result.error}`];
   }
 
-  self.postMessage(result);
-};
+  scope.postMessage(result);
+}
+
+/* v8 ignore start */
+if (typeof self !== 'undefined') {
+  (self as unknown as WorkerGlobalScope).onmessage = (e: MessageEvent<CompileJob>): Promise<void> =>
+    handleWorkerMessage(e, self as unknown as WorkerGlobalScope);
+}
+/* v8 ignore stop */

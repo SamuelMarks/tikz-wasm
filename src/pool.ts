@@ -1,61 +1,93 @@
+/**
+ * Singleton pool managing the inlined Blob Web Worker instance of {@link TikzCompiler}.
+ *
+ * @packageDocumentation
+ */
+
 import { TikzCompiler } from './compiler.js';
 
-// Declaration for the injected define from vite.config.ts
 declare const __TIKZ_WORKER_CODE__: string;
 
-/** 
- * Manages a singleton instance of the Compiler. 
- * Prevents spawning multiple Workers for multiple render calls. 
- * 
- * Uses the Inlined Worker strategy: created from a Blob URL of the bundled source.
- */ 
-export class CompilerPool { 
-  private static instance: TikzCompiler | null = null; 
+/**
+ * Manages a singleton instance of {@link TikzCompiler} to avoid spawning redundant Web Workers.
+ * Uses an inlined Blob URL strategy created from the bundled worker code.
+ */
+export class CompilerPool {
+  /**
+   * Singleton {@link TikzCompiler} instance.
+   */
+  private static instance: TikzCompiler | null = null;
 
-  /** 
-   * @deprecated Configuration is no longer needed; worker is bundled inline.
-   */ 
-  static setWorkerUrl(_url: string) { 
-    // No-op for backward compatibility or future overrides
-    console.warn("TikZ-WASM: setWorkerUrl is deprecated. Worker is bundled inline.");
-  } 
+  /**
+   * Active Blob Object URL for the current worker instance, revoked on {@link CompilerPool.reset}.
+   */
+  private static workerUrl: string | null = null;
 
-  /** 
-   * Gets or creates the compiler instance. 
-   * Creates a Blob URL from the injected worker string.
-   */ 
-  static getInstance(): TikzCompiler { 
-    if (!this.instance) { 
-      try { 
-        // 1. Create a Blob from the inlined code
+  /**
+   * Deprecated configuration hook retained for backward compatibility.
+   *
+   * @deprecated Worker code is now bundled inline; external URLs are ignored.
+   * @param _url - Ignored worker script URL.
+   */
+  static setWorkerUrl(_url: string): void {
+    console.warn('TikZ-WASM: setWorkerUrl is deprecated. Worker is bundled inline.');
+  }
+
+  /**
+   * Gets or creates the singleton {@link TikzCompiler} instance.
+   *
+   * @returns The active {@link TikzCompiler} singleton.
+   * @throws Error if the Blob or Web Worker cannot be created.
+   */
+  static getInstance(): TikzCompiler {
+    if (!this.instance) {
+      try {
         const blob = new Blob([__TIKZ_WORKER_CODE__], { type: 'application/javascript' });
-        
-        // 2. Create an Object URL
-        const workerUrl = URL.createObjectURL(blob);
-        
-        // 3. Instantiate
-        this.instance = new TikzCompiler(workerUrl); 
-        
-        // Note: We deliberately do not revoke the URL immediately as the worker might restart 
-        // or need debugging, though for strict memory management one could revoke after init.
-      } catch (e) { 
-        throw new Error(`Could not spawn TikZ Worker: ${e}`); 
-      } 
-    } 
-    return this.instance; 
-  } 
+        const url = URL.createObjectURL(blob);
+        this.workerUrl = url;
+        this.instance = new TikzCompiler(url);
+      } catch (e: unknown) {
+        const reason = e instanceof Error ? e.message : String(e);
+        throw new Error(`Could not spawn TikZ Worker: ${reason}`);
+      }
+    }
+    return this.instance;
+  }
 
-  /** 
-   * Resets the instance (e.g. for testing or memory cleanup) 
-   */ 
-  static reset() { 
-    if (this.instance) { 
-      this.instance.terminate(); 
-      this.instance = null; 
-    } 
-  } 
-} 
+  /**
+   * Terminates the active compiler worker, revokes its Blob Object URL, and clears the singleton.
+   */
+  static reset(): void {
+    if (this.instance) {
+      this.instance.terminate();
+      this.instance = null;
+    }
+    if (this.workerUrl && typeof URL.revokeObjectURL === 'function') {
+      URL.revokeObjectURL(this.workerUrl);
+      this.workerUrl = null;
+    }
+  }
+}
 
-export const getCompiler = CompilerPool.getInstance.bind(CompilerPool); 
-export const configureCompiler = CompilerPool.setWorkerUrl.bind(CompilerPool); 
-export const resetCompiler = CompilerPool.reset.bind(CompilerPool);
+/**
+ * Retrieves or creates the singleton {@link TikzCompiler} instance.
+ *
+ * @returns The singleton {@link TikzCompiler}.
+ */
+export const getCompiler = (): TikzCompiler => CompilerPool.getInstance();
+
+/**
+ * Deprecated helper to configure the worker script URL.
+ *
+ * @param url - Ignored worker script URL.
+ */
+export const configureCompiler = (url: string): void => {
+  CompilerPool.setWorkerUrl(url);
+};
+
+/**
+ * Terminates and resets the singleton {@link TikzCompiler} instance.
+ */
+export const resetCompiler = (): void => {
+  CompilerPool.reset();
+};

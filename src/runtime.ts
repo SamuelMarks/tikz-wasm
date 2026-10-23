@@ -1,9 +1,15 @@
 /**
+ * Asset decompression and runtime state utilities.
+ *
+ * @packageDocumentation
+ */
+
+/**
  * Unpacks a Base64-encoded Gzipped string into its original binary form.
  * Utilizes the modern `DecompressionStream` API for native performance.
- * 
- * @param base64 The Gzipped content encoded as Base64.
- * @returns A Promise resolving to the uncompressed Uint8Array.
+ *
+ * @param base64 - The Gzipped content encoded as Base64.
+ * @returns A Promise resolving to the uncompressed `Uint8Array`.
  * @throws Error if `DecompressionStream` is not supported in the current environment.
  */
 export async function unpackAsset(base64: string): Promise<Uint8Array> {
@@ -15,7 +21,6 @@ export async function unpackAsset(base64: string): Promise<Uint8Array> {
   }
 
   // 1. Base64 -> Binary String
-  // Using atob is standard in browser environments. 
   const binaryString = atob(base64);
   const len = binaryString.length;
   const bytes = new Uint8Array(len);
@@ -26,7 +31,6 @@ export async function unpackAsset(base64: string): Promise<Uint8Array> {
   }
 
   // 3. Decompress via Stream
-  // Wraps the compression frame in a Blob -> Stream pipeline
   const stream = new Blob([bytes]).stream()
     .pipeThrough(new DecompressionStream('gzip'));
 

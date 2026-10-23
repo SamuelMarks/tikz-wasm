@@ -14,16 +14,17 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
       "import": "./dist/tikz-wasm.es.js",
-      "require": "./dist/tikz-wasm.umd.js",
-      "types": "./dist/index.d.ts"
+      "require": "./dist/tikz-wasm.umd.js"
     }
   },
   "scripts": {
     "dev": "vite",
     "setup": "tsx scripts/setup.ts",
     "build:fmt": "tsx scripts/build_fmt.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc -p tsconfig.check.json --noEmit",
+    "lint": "tsx scripts/check_docs.ts",
     "build": "tsc --emitDeclarationOnly && vite build",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -45,6 +46,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.0.3",
+    "@vitest/coverage-v8": "^4.0.16",
     "esbuild": "^0.27.2",
     "glob": "^13.0.0",
     "tsx": "^4.21.0",

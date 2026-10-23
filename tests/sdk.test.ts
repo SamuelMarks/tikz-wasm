@@ -1,79 +1,98 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderTikzAsSvg, configureCompiler } from '../src/sdk';
-import { resetCompiler } from '../src/pool';
-import { TikzCompiler } from '../src/compiler';
+/**
+ * Unit tests for `src/sdk.ts` ({@link renderTikzAsSvg}, {@link configureCompiler}).
+ *
+ * @packageDocumentation
+ */
 
-// 1. Hoisted mocks to allow vi.mock factory to use them
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { renderTikzAsSvg, configureCompiler } from '../src/sdk.js';
+import { resetCompiler } from '../src/pool.js';
+import { TikzCompiler } from '../src/compiler.js';
+import { TikzCompilationError } from '../src/errors.js';
+
 const { mockCompile, mockTerminate, mockParse } = vi.hoisted(() => ({
   mockCompile: vi.fn(),
   mockTerminate: vi.fn(),
-  mockParse: vi.fn()
+  mockParse: vi.fn(),
 }));
 
-// 2. Mock modules using the hoisted variables
-// --- FIX: Use standard function for constructor mock ---
-vi.mock('../src/compiler', () => ({
-  TikzCompiler: vi.fn().mockImplementation(function() {
+vi.mock('../src/compiler.js', () => ({
+  TikzCompiler: vi.fn().mockImplementation(function () {
     return {
       compile: mockCompile,
-      terminate: mockTerminate
+      terminate: mockTerminate,
     };
-  })
+  }),
 }));
 
-vi.mock('../src/parser', () => ({
-  DviParser: vi.fn().mockImplementation(function() {
+vi.mock('../src/parser.js', () => ({
+  DviParser: vi.fn().mockImplementation(function () {
     return {
-      parse: mockParse
+      parse: mockParse,
     };
-  })
+  }),
 }));
 
-// Mock global worker code injection and URL API for the "Inline Worker" pattern
-(globalThis as any).__TIKZ_WORKER_CODE__ = "console.log('Worker Stub');";
-(globalThis as any).URL.createObjectURL = vi.fn((blob) => `blob:stub-${blob}`);
+const testGlobals = globalThis as unknown as Record<string, unknown>;
+testGlobals['__TIKZ_WORKER_CODE__'] = "console.log('Worker Stub');";
+URL.createObjectURL = vi.fn((blob: unknown) => `blob:stub-${String(blob)}`);
+URL.revokeObjectURL = vi.fn();
 
 describe('SDK: renderTikzAsSvg', () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
-    // Default Happy Path
     mockCompile.mockResolvedValue({
+      id: 'job-1',
       success: true,
       dvi: new Uint8Array([0]),
-      logs: []
+      logs: ['TeX output line 1'],
     });
     mockParse.mockReturnValue('<svg>default</svg>');
 
-    // Ensure clean singleton state
-    try { resetCompiler(); } catch (e) {}
+    resetCompiler();
   });
 
   afterEach(() => {
-    try { resetCompiler(); } catch (e) {}
+    resetCompiler();
   });
 
-  it('should unwrap specific valid output', async () => {
-    mockCompile.mockResolvedValue({ success: true, dvi: new Uint8Array([1]), logs: [] });
+  it('should wrap snippet in document, compile, and parse valid DVI output', async () => {
+    mockCompile.mockResolvedValue({
+      id: 'job-2',
+      success: true,
+      dvi: new Uint8Array([1]),
+      logs: [],
+    });
     mockParse.mockReturnValue('<svg>Success</svg>');
 
-    const svg = await renderTikzAsSvg('\\begin{tikzpicture}');
+    const svg = await renderTikzAsSvg(String.raw`\begin{tikzpicture}\end{tikzpicture}`);
 
-    expect(mockCompile).toHaveBeenCalled();
-    // Verify template wrapping happened
-    const calledSrc = mockCompile.mock.calls[0][0];
-    expect(calledSrc).toContain('\\documentclass');
-
+    expect(mockCompile).toHaveBeenCalledTimes(1);
+    const calledSrc = String((mockCompile.mock.calls[0] as unknown[])?.[0]);
+    expect(calledSrc).toContain(String.raw`\documentclass`);
     expect(svg).toBe('<svg>Success</svg>');
   });
 
-  it('should instantiate the compiler with a Blob URL', () => {
+  it('should log compilation lines when options.debug is enabled', async () => {
+    const debugLines: string[] = [];
+    await renderTikzAsSvg('code', {
+      debug: true,
+      debugLogger: (msg: string): void => {
+        debugLines.push(msg);
+      },
+    });
+    expect(debugLines).toEqual(['TeX output line 1']);
+
+    const consoleDebugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    await renderTikzAsSvg('code', { debug: true });
+    expect(consoleDebugSpy).toHaveBeenCalledWith('TeX output line 1');
+    consoleDebugSpy.mockRestore();
+  });
+
+  it('should instantiate the compiler with a Blob URL', async () => {
     resetCompiler();
-
-    // Trigger instantiation
-    renderTikzAsSvg('code').catch(() => {}); // catch needed if mockParse fails or similar
-
-    // Verify architectural change: We expect a generated blob URL
+    await renderTikzAsSvg('code');
     expect(TikzCompiler).toHaveBeenCalledWith(expect.stringMatching(/^blob:/));
   });
 
@@ -84,42 +103,45 @@ describe('SDK: renderTikzAsSvg', () => {
     warn.mockRestore();
   });
 
-  it('should reuse compiler instance', async () => {
+  it('should reuse compiler instance across multiple calls', async () => {
     resetCompiler();
-
-    // First Call -> Spawns Instance
     await renderTikzAsSvg('1');
-
-    // Second Call -> Reuses Instance
     await renderTikzAsSvg('2');
 
     expect(TikzCompiler).toHaveBeenCalledTimes(1);
     expect(mockCompile).toHaveBeenCalledTimes(2);
   });
 
-  it('should throw TikzCompilationError on engine failure', async () => {
+  it('should throw TikzCompilationError with logs on engine failure', async () => {
     mockCompile.mockResolvedValue({
+      id: 'fail-1',
       success: false,
-      logs: ['! Undefined control sequence']
+      logs: ['! Undefined control sequence'],
     });
 
-    await expect(renderTikzAsSvg('bad code'))
-        .rejects
-        .toThrow(/TeX compilation failed/);
+    await expect(renderTikzAsSvg('bad code')).rejects.toThrow(TikzCompilationError);
 
     try {
       await renderTikzAsSvg('bad code');
-    } catch (e: any) {
-      expect(e.logs).toBeDefined();
-      expect(e.logs).toContain('! Undefined control sequence');
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(TikzCompilationError);
+      if (e instanceof TikzCompilationError) {
+        expect(e.logs).toContain('! Undefined control sequence');
+      }
     }
   });
 
-  it('should throw generic error on DVI parsing failure', async () => {
-    mockParse.mockImplementation(() => { throw new Error('Corrupt Bytes'); });
+  it('should wrap Error and non-Error DVI parsing failures', async () => {
+    mockParse.mockImplementationOnce(() => {
+      throw new Error('Corrupt Bytes');
+    });
+    await expect(renderTikzAsSvg('code')).rejects.toThrow('DVI Parsing Error: Corrupt Bytes');
 
-    await expect(renderTikzAsSvg('code'))
-        .rejects
-        .toThrow(/DVI Parsing Error/);
+    mockParse.mockImplementationOnce(() => {
+      throw 'String Parse Failure';
+    });
+    await expect(renderTikzAsSvg('code')).rejects.toThrow(
+      'DVI Parsing Error: String Parse Failure'
+    );
   });
 });

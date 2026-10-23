@@ -1,84 +1,92 @@
+/**
+ * Unit tests for `src/runtime.ts` ({@link unpackAsset}).
+ *
+ * @packageDocumentation
+ */
+
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { unpackAsset } from '../src/runtime';
+import { unpackAsset } from '../src/runtime.js';
 
 const mockArrayBuffer = new ArrayBuffer(8);
 
-// --- FIX: Use a class for Response mock ---
 class MockResponse {
-  constructor(_stream: any) {}
-  async arrayBuffer() {
+  constructor(_stream: unknown) {}
+  async arrayBuffer(): Promise<ArrayBuffer> {
     return mockArrayBuffer;
   }
 }
 
 const mockDecompressionStream = vi.fn();
 
-const originalDS = globalThis.DecompressionStream;
-const originalResponse = globalThis.Response;
-const originalBlob = globalThis.Blob;
+const runtimeGlobals = globalThis as unknown as Record<string, unknown>;
+const originalDS = runtimeGlobals['DecompressionStream'];
+const originalResponse = runtimeGlobals['Response'];
+const originalBlob = runtimeGlobals['Blob'];
 const originalAtob = globalThis.atob;
 
 describe('Runtime: unpackAsset', () => {
   beforeEach(() => {
-    globalThis.DecompressionStream = mockDecompressionStream as any;
-    globalThis.Response = MockResponse as any; // Assign class directly
+    runtimeGlobals['DecompressionStream'] = mockDecompressionStream;
+    runtimeGlobals['Response'] = MockResponse;
 
-    globalThis.Blob = class {
-      constructor(parts: any[]) {
-        (this as any).parts = parts;
+    runtimeGlobals['Blob'] = class {
+      readonly parts: readonly unknown[];
+      constructor(parts: readonly unknown[]) {
+        this.parts = parts;
       }
-      stream() {
+      stream(): { pipeThrough: ReturnType<typeof vi.fn> } {
         return {
-          pipeThrough: vi.fn().mockReturnValue("stream_stub")
+          pipeThrough: vi.fn().mockReturnValue('stream_stub'),
         };
       }
-    } as any;
-    globalThis.atob = vi.fn((str) => str);
+    };
+    globalThis.atob = vi.fn((str: string) => str);
   });
 
   afterEach(() => {
-    globalThis.DecompressionStream = originalDS;
-    globalThis.Response = originalResponse;
-    globalThis.Blob = originalBlob;
+    runtimeGlobals['DecompressionStream'] = originalDS;
+    runtimeGlobals['Response'] = originalResponse;
+    runtimeGlobals['Blob'] = originalBlob;
     globalThis.atob = originalAtob;
     vi.clearAllMocks();
   });
 
   it('should successfully decompress compatible assets', async () => {
-    const input = "base64_data";
+    const input = 'base64_data';
     const result = await unpackAsset(input);
 
     expect(globalThis.atob).toHaveBeenCalledWith(input);
     expect(mockDecompressionStream).toHaveBeenCalledWith('gzip');
-    // Response.arrayBuffer() logic is verified by the result check below
     expect(result).toBeInstanceOf(Uint8Array);
     expect(result.buffer).toBe(mockArrayBuffer);
   });
 
   it('should throw if DecompressionStream is missing', async () => {
-    // @ts-ignore
-    delete globalThis.DecompressionStream;
-    await expect(unpackAsset("data"))
-        .rejects.toThrow(/Browser does not support DecompressionStream/);
+    delete runtimeGlobals['DecompressionStream'];
+    await expect(unpackAsset('data')).rejects.toThrow(
+      /Browser does not support DecompressionStream/
+    );
   });
 
-  it('should correctly map binary string to Uint8Array', async () => {
+  it('should correctly map binary string characters to Uint8Array bytes', async () => {
     let capturedBytes: Uint8Array | null = null;
 
-    globalThis.Blob = class {
-      constructor(parts: any[]) {
+    runtimeGlobals['Blob'] = class {
+      constructor(parts: readonly unknown[]) {
         capturedBytes = parts[0] as Uint8Array;
       }
-      stream() { return { pipeThrough: () => {} }; }
-    } as any;
+      stream(): { pipeThrough: () => void } {
+        return { pipeThrough: (): void => {} };
+      }
+    };
 
-    globalThis.atob = (s) => s;
+    globalThis.atob = (s: string): string => s;
 
     await unpackAsset('ABC');
 
     expect(capturedBytes).toBeDefined();
-    expect(capturedBytes![0]).toBe(65);
-    expect(capturedBytes![1]).toBe(66);
-    expect(capturedBytes![2]).toBe(67);
+    expect(capturedBytes?.[0]).toBe(65);
+    expect(capturedBytes?.[1]).toBe(66);
+    expect(capturedBytes?.[2]).toBe(67);
   });
 });

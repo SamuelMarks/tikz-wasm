@@ -1,26 +1,89 @@
 /**
- * Converts DVI logic to SVG strings.
- * Manages the SVG definitions, coordinate transformations (SP to PT), 
- * and bounding box calculations to generate a clean "standalone" SVG.
+ * SVG document builder converting DVI coordinates (scaled points) and `dvisvgm` specials
+ * into standalone, bounding-box-fitted SVG markup.
+ *
+ * @packageDocumentation
+ */
+
+import { createFontStyle, type CssFontSpec } from './font-map.js';
+
+/**
+ * Escapes special XML characters (`&`, `<`, `>`, `"`, `'`) in text nodes and attribute values.
+ *
+ * @param text - Raw unescaped string.
+ * @returns XML-safe escaped string.
+ */
+export function escapeXml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+/**
+ * Converts DVI operations and `dvisvgm` specials into an SVG document string.
+ * Manages coordinate transformations (`sp` to `pt`) and bounding box calculation.
  */
 export class SvgBuilder {
-  private buffer: string[] = [];
-  
-  // Bounding Box (in Points)
+  /**
+   * Accumulated SVG element markup strings.
+   */
+  private readonly buffer: string[] = [];
+
+  /**
+   * Optional Base64-encoded WOFF2 font to embed in the SVG `<style>` block.
+   */
+  private readonly fontBase64Woff2: string | undefined;
+
+  /**
+   * Minimum X coordinate in PostScript points (`pt`).
+   */
   private minX: number = Infinity;
+
+  /**
+   * Minimum Y coordinate in PostScript points (`pt`).
+   */
   private minY: number = Infinity;
+
+  /**
+   * Maximum X coordinate in PostScript points (`pt`).
+   */
   private maxX: number = -Infinity;
+
+  /**
+   * Maximum Y coordinate in PostScript points (`pt`).
+   */
   private maxY: number = -Infinity;
 
   /**
-   * Converts Scaled Points (SP) to PostScript Points (PT).
-   * 1 pt = 65536 sp
+   * Creates a new {@link SvgBuilder}.
+   *
+   * @param fontBase64Woff2 - Optional Base64-encoded WOFF2 font data to embed.
+   */
+  constructor(fontBase64Woff2?: string) {
+    this.fontBase64Woff2 = fontBase64Woff2;
+  }
+
+  /**
+   * Converts Scaled Points (`sp`) to PostScript Points (`pt`).
+   * `1 pt = 65536 sp`.
+   *
+   * @param sp - Coordinate or dimension in scaled points.
+   * @returns Value in PostScript points.
    */
   private fixedToFloat(sp: number): number {
     return sp / 65536.0;
   }
 
-  private updateBounds(x: number, y: number) {
+  /**
+   * Expands the bounding box to include the point `(x, y)` in points.
+   *
+   * @param x - Horizontal coordinate in points.
+   * @param y - Vertical coordinate in points.
+   */
+  private updateBounds(x: number, y: number): void {
     if (x < this.minX) this.minX = x;
     if (x > this.maxX) this.maxX = x;
     if (y < this.minY) this.minY = y;
@@ -28,30 +91,54 @@ export class SvgBuilder {
   }
 
   /**
-   * Adds a basic text element (fallback for standard DVI text).
-   * Note: In TikZ DVI paths, text is often embedded in specials or 
-   * requires font mapping which is minimal here.
+   * Adds a `<text>` element at the specified DVI coordinates.
+   *
+   * @param xSp - Horizontal coordinate in scaled points (`sp`).
+   * @param ySp - Vertical baseline coordinate in scaled points (`sp`).
+   * @param text - Text content to render.
+   * @param fontFamilyOrSpec - Font family name or resolved {@link CssFontSpec}.
+   * @param fontSize - Font size in points (`pt`).
    */
-  addText(xSp: number, ySp: number, text: string, fontFamily: string, fontSize: number) {
+  addText(
+    xSp: number,
+    ySp: number,
+    text: string,
+    fontFamilyOrSpec: string | CssFontSpec,
+    fontSize: number
+  ): void {
     const x = this.fixedToFloat(xSp);
     const y = this.fixedToFloat(ySp);
-    
-    // Rudimentary bounds approximation for text (assuming 0.5em width per char approx)
-    this.updateBounds(x, y);
-    this.updateBounds(x + (text.length * fontSize * 0.5), y - fontSize);
 
-    this.buffer.push(
-      `<text x="${x.toFixed(3)}" y="${y.toFixed(3)}" font-family="${fontFamily}" font-size="${fontSize}">${text}</text>`
-    );
+    // Rudimentary bounds approximation for text (0.5em width per character)
+    this.updateBounds(x, y);
+    this.updateBounds(x + text.length * fontSize * 0.5, y - fontSize);
+
+    const escaped = escapeXml(text);
+    if (typeof fontFamilyOrSpec === 'string') {
+      this.buffer.push(
+        `<text x="${x.toFixed(3)}" y="${y.toFixed(3)}" font-family="${escapeXml(fontFamilyOrSpec)}" font-size="${fontSize}">${escaped}</text>`
+      );
+    } else {
+      const styleAttrs =
+        fontFamilyOrSpec.style !== 'normal' || fontFamilyOrSpec.weight !== 400
+          ? ` font-style="${fontFamilyOrSpec.style}" font-weight="${fontFamilyOrSpec.weight}"`
+          : '';
+      this.buffer.push(
+        `<text x="${x.toFixed(3)}" y="${y.toFixed(3)}" font-family="${escapeXml(fontFamilyOrSpec.family)}" font-size="${fontSize}"${styleAttrs}>${escaped}</text>`
+      );
+    }
   }
 
   /**
-   * Adds a rectangle (DVI Rule).
-   * DVI Coordinates: Origin is top-left (usually). Y increases DOWN.
-   * However, `set_rule` puts a rule at (H,V) extending UP by `height` and RIGHT by `width`.
-   * So SVG Y = V_dvi - height_rule.
+   * Adds a solid black `<rect>` corresponding to a DVI `SET_RULE` or `PUT_RULE` operation.
+   * In DVI coordinates, a rule sits on baseline `(h, v)` and extends upward by `hSp` and right by `wSp`.
+   *
+   * @param xSp - Left coordinate in scaled points (`sp`).
+   * @param ySp - Bottom baseline coordinate in scaled points (`sp`).
+   * @param wSp - Rule width in scaled points (`sp`).
+   * @param hSp - Rule height in scaled points (`sp`).
    */
-  addRect(xSp: number, ySp: number, wSp: number, hSp: number) {
+  addRect(xSp: number, ySp: number, wSp: number, hSp: number): void {
     const x = this.fixedToFloat(xSp);
     const y = this.fixedToFloat(ySp);
     const w = this.fixedToFloat(wSp);
@@ -68,41 +155,34 @@ export class SvgBuilder {
   }
 
   /**
-   * Injects raw SVG fragment from specials (e.g., dvisvgm output).
-   * Wraps the content in a <g transform="..."> to place it correctly 
-   * relative to the DVI cursor position.
-   * 
-   * Also attempts to parse basic path numbers to update the bounding box.
+   * Injects a raw SVG fragment emitted by `dvisvgm:raw` or color specials,
+   * wrapped in a `<g transform="translate(tx, ty)">` group positioned at the DVI cursor.
+   *
+   * @param svgFragment - Raw SVG markup fragment.
+   * @param xSp - Horizontal DVI cursor position in scaled points (`sp`).
+   * @param ySp - Vertical DVI cursor position in scaled points (`sp`).
    */
-  addSpecialSVG(svgFragment: string, xSp: number, ySp: number) {
+  addSpecialSVG(svgFragment: string, xSp: number, ySp: number): void {
     const tx = this.fixedToFloat(xSp);
     const ty = this.fixedToFloat(ySp);
 
-    // Heuristically extract numbers from key attributes (d, x, y) to update bounds
-    // This isn't a perfect SVG parser (too heavy), but 'Good Enough' for auto-fit viewBox.
-    // We search for numbers inside d="..." attributes.
     const pathMatch = svgFragment.match(/d="([^"]+)"/g);
     if (pathMatch) {
+      let updatedFromPath = false;
       for (const dAttr of pathMatch) {
-        // Extract all float-like numbers
-        const numbers = dAttr.match(/[+-]?\d*\.?\d+(?:[eE][+-]?\d+)?/g);
+        const numbers = dAttr.match(/[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/g);
         if (numbers) {
           for (const numStr of numbers) {
             const val = parseFloat(numStr);
-            if (!isNaN(val)) {
-              // Since paths are typically relative to the group transform:
-              // We blindly checking X vs Y is impossible without a parser state machine.
-              // Strategy: Assume *every* number could be an X or a Y coordinate 
-              // and expand bounds conservatively.
-              // This might Expand bounds more than needed (e.g. rotation degrees), 
-              // but ensures nothing is clipped.
-              this.updateBounds(tx + val, ty + val); 
-            }
+            this.updateBounds(tx + val, ty + val);
+            updatedFromPath = true;
           }
         }
       }
+      if (!updatedFromPath) {
+        this.updateBounds(tx, ty);
+      }
     } else {
-      // If no paths, just register the anchor point
       this.updateBounds(tx, ty);
     }
 
@@ -111,22 +191,32 @@ export class SvgBuilder {
     );
   }
 
+  /**
+   * Assembles the final standalone `<svg>` document string with a padded `viewBox`.
+   *
+   * @returns Complete SVG document string.
+   */
   getSVG(): string {
     const padding = 2; // pt
-    
-    // Fallback if empty
+
     if (this.minX === Infinity) {
-      this.minX = 0; this.minY = 0; this.maxX = 100; this.maxY = 100;
+      this.minX = 0;
+      this.minY = 0;
+      this.maxX = 100;
+      this.maxY = 100;
     }
 
-    const w = this.maxX - this.minX + (padding * 2);
-    const h = this.maxY - this.minY + (padding * 2);
+    const w = this.maxX - this.minX + padding * 2;
+    const h = this.maxY - this.minY + padding * 2;
     const viewBoxX = this.minX - padding;
     const viewBoxY = this.minY - padding;
 
-    // We use a fixed precision for clean output
     const vb = `${viewBoxX.toFixed(2)} ${viewBoxY.toFixed(2)} ${w.toFixed(2)} ${h.toFixed(2)}`;
+    const styleBlock = createFontStyle(this.fontBase64Woff2);
+    const nl = String.fromCharCode(10);
+    const joined = this.buffer.join(nl);
+    const body = styleBlock ? `${styleBlock}${nl}${joined}` : joined;
 
-    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb}" width="${w}pt" height="${h}pt">\n${this.buffer.join('\n')}\n</svg>`;
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb}" width="${w}pt" height="${h}pt">${nl}${body}${nl}</svg>`;
   }
 }

@@ -1,18 +1,28 @@
+/**
+ * Unit tests for `scripts/setup.ts`.
+ *
+ * @packageDocumentation
+ */
+
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
-import fs from 'node:fs';
-import * as setup from '../scripts/setup';
 
-// Define hoisted names for mocks
-const { mockWriteFileSync, mockUnlinkSync, mockMkdirSync, mockExistsSync, mockReadFileSync } = vi.hoisted(() => ({
+const {
+  mockWriteFileSync,
+  mockUnlinkSync,
+  mockMkdirSync,
+  mockExistsSync,
+  mockReadFileSync,
+  mockCopyFileSync,
+} = vi.hoisted(() => ({
   mockWriteFileSync: vi.fn(),
   mockUnlinkSync: vi.fn(),
   mockMkdirSync: vi.fn(),
   mockExistsSync: vi.fn(),
   mockReadFileSync: vi.fn(),
+  mockCopyFileSync: vi.fn(),
 }));
 
-// Mock `fs` module
 vi.mock('node:fs', () => ({
   default: {
     existsSync: mockExistsSync,
@@ -20,22 +30,32 @@ vi.mock('node:fs', () => ({
     writeFileSync: mockWriteFileSync,
     readFileSync: mockReadFileSync,
     unlinkSync: mockUnlinkSync,
-  }
+    copyFileSync: mockCopyFileSync,
+  },
+  existsSync: mockExistsSync,
+  mkdirSync: mockMkdirSync,
+  writeFileSync: mockWriteFileSync,
+  readFileSync: mockReadFileSync,
+  unlinkSync: mockUnlinkSync,
+  copyFileSync: mockCopyFileSync,
 }));
 
+import * as setup from '../scripts/setup.js';
+
 describe('Scripts: setup.ts', () => {
-  const OriginalFetch = global.fetch;
-  const OriginalConsole = console.error;
-  const mockExit = vi.spyOn(process, 'exit').mockImplementation((() => {}) as any);
+  const OriginalFetch = globalThis.fetch;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    console.error = vi.fn(); // Silence error logs
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(process, 'exit').mockImplementation((() => {}) as unknown as (code?: string | number | null) => never);
   });
 
   afterEach(() => {
-    global.fetch = OriginalFetch;
-    console.error = OriginalConsole;
+    globalThis.fetch = OriginalFetch;
+    vi.restoreAllMocks();
   });
 
   describe('ensureDirectory', () => {
@@ -45,7 +65,7 @@ describe('Scripts: setup.ts', () => {
       expect(mockMkdirSync).toHaveBeenCalledWith('/test/dir', { recursive: true });
     });
 
-    it('should do nothing if directory exists', () => {
+    it('should do nothing if directory already exists', () => {
       mockExistsSync.mockReturnValue(true);
       setup.ensureDirectory('/test/dir');
       expect(mockMkdirSync).not.toHaveBeenCalled();
@@ -53,79 +73,146 @@ describe('Scripts: setup.ts', () => {
   });
 
   describe('downloadFile', () => {
-    const dummyRef = { ok: true, arrayBuffer: async () => new ArrayBuffer(8), statusText: 'OK' };
+    it('should fetch and write file to disk', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        arrayBuffer: async () => new ArrayBuffer(8),
+        statusText: 'OK',
+        status: 200,
+      } as unknown as Response);
 
-    it('should fetch and write file', async () => {
-      global.fetch = vi.fn().mockResolvedValue(dummyRef as any);
-      
       await setup.downloadFile('http://example.com/file', '/local/file');
-      
-      expect(global.fetch).toHaveBeenCalledWith('http://example.com/file');
+
+      expect(globalThis.fetch).toHaveBeenCalledWith('http://example.com/file');
       expect(mockWriteFileSync).toHaveBeenCalledWith('/local/file', expect.any(Buffer));
     });
 
-    it('should throw on non-ok response', async () => {
-      global.fetch = vi.fn().mockResolvedValue({ ok: false, statusText: 'Not Found' } as any);
-      
-      await expect(setup.downloadFile('http://bad.url', '/local/bad'))
-        .rejects.toThrow('Failed to fetch http://bad.url: Not Found');
+    it('should throw on non-ok HTTP response', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        statusText: 'Not Found',
+        status: 404,
+      } as unknown as Response);
+
+      await expect(setup.downloadFile('http://bad.url', '/local/bad')).rejects.toThrow(
+        'Failed to fetch http://bad.url: Not Found (404)'
+      );
+    });
+  });
+
+  describe('copyLocal', () => {
+    it('should copy pdftex.wasm and PdfTeXEngine.js when both exist', async () => {
+      mockExistsSync.mockReturnValue(true);
+      await setup.copyLocal('/local/build', '/dest/assets');
+
+      expect(mockCopyFileSync).toHaveBeenCalledWith(
+        path.join('/local/build', 'pdftex.wasm'),
+        path.join('/dest/assets', setup.CONFIG.wasmPath)
+      );
+      expect(mockCopyFileSync).toHaveBeenCalledWith(
+        path.join('/local/build', 'PdfTeXEngine.js'),
+        path.join('/dest/assets', 'temp_glue.js')
+      );
+    });
+
+    it('should throw if pdftex.wasm is missing', async () => {
+      mockExistsSync.mockReturnValueOnce(false);
+      await expect(setup.copyLocal('/local/build', '/dest/assets')).rejects.toThrow(
+        /Local build missing WASM at:/
+      );
+    });
+
+    it('should throw if PdfTeXEngine.js is missing', async () => {
+      mockExistsSync.mockReturnValueOnce(true).mockReturnValueOnce(false);
+      await expect(setup.copyLocal('/local/build', '/dest/assets')).rejects.toThrow(
+        /Local build missing JS Glue at:/
+      );
     });
   });
 
   describe('patchGlueCode', () => {
-    it('should wrap code in Promise factory', () => {
-      const raw = 'var Module = {};';
+    it('should wrap Emscripten glue code in TikZModuleFactory Promise', () => {
+      const raw = 'var Module=typeof Module!="undefined"?Module:{}; const f = require("fs");';
       const output = setup.patchGlueCode(raw);
-      
+
       expect(output).toContain('export default function TikZModuleFactory');
       expect(output).toContain('return new Promise');
-      expect(output).toContain('// --- START UPSTREAM CODE ---');
-      expect(output).toContain(raw);
-      expect(output).toContain('});'); // End of promise
+      expect(output).toContain('var Module = moduleOverrides || {};');
+      expect(output).toContain('const f = {};');
     });
   });
 
   describe('main', () => {
-    it('should execute full workflow successfully', async () => {
-      // Setup mocks for flow
-      mockExistsSync.mockReturnValue(true); // Dir exists
-      global.fetch = vi.fn().mockResolvedValue({ ok: true, arrayBuffer: async () => new ArrayBuffer(10) } as any);
+    it('should execute remote download workflow and patch glue when temp_glue.js exists', async () => {
+      mockExistsSync.mockReturnValue(true);
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        arrayBuffer: async () => new ArrayBuffer(10),
+      } as unknown as Response);
       mockReadFileSync.mockReturnValue('var Glue = true;');
 
-      await setup.main();
+      await setup.main([]);
 
-      // 1. Ensure dir
-      expect(mockExistsSync).toHaveBeenCalledWith(setup.CONFIG.assetsDir);
-      
-      // 2. Fetch WASM
-      expect(global.fetch).toHaveBeenCalledWith(setup.ASSET_URLS.wasm);
-      expect(mockWriteFileSync).toHaveBeenCalledWith(
-        path.join(setup.CONFIG.assetsDir, 'tex.wasm'),
-        expect.any(Buffer)
-      );
-
-      // 3. Fetch Glue
-      expect(global.fetch).toHaveBeenCalledWith(setup.ASSET_URLS.glue);
-      
-      // 4. Read Temp & Write Patched
-      expect(mockReadFileSync).toHaveBeenCalled();
+      expect(globalThis.fetch).toHaveBeenCalledWith(setup.ASSET_URLS.wasm);
+      expect(globalThis.fetch).toHaveBeenCalledWith(setup.ASSET_URLS.glue);
       expect(mockWriteFileSync).toHaveBeenCalledWith(
         path.join(setup.CONFIG.assetsDir, 'tex_glue.js'),
-        expect.stringContaining('export default function')
+        expect.stringContaining('export default function TikZModuleFactory')
       );
-
-      // 5. Cleanup
       expect(mockUnlinkSync).toHaveBeenCalled();
     });
 
-    it('should handle errors and exit process', async () => {
-      // Simulate fetch error
-      global.fetch = vi.fn().mockResolvedValue({ ok: false, statusText: 'Server Error' } as any);
+    it('should execute --local workflow and skip patching if temp_glue.js does not exist', async () => {
+      const originalWasmUrl = setup.ASSET_URLS.wasm;
+      setup.ASSET_URLS.wasm = 'https://custom.domain/pdftex.wasm';
 
-      await setup.main();
+      // ensureDirectory(true), copyLocal wasm(true), copyLocal glue(true), tempGlue exists(false)
+      mockExistsSync
+        .mockReturnValueOnce(true)
+        .mockReturnValueOnce(true)
+        .mockReturnValueOnce(true)
+        .mockReturnValueOnce(false);
 
-      expect(console.error).toHaveBeenCalled();
-      expect(mockExit).toHaveBeenCalledWith(1);
+      await setup.main(['--local', '/custom/build']);
+
+      expect(mockCopyFileSync).toHaveBeenCalledTimes(2);
+      expect(mockUnlinkSync).not.toHaveBeenCalled();
+
+      setup.ASSET_URLS.wasm = originalWasmUrl;
+    });
+
+    it('should skip placeholder warning when ASSET_URLS.wasm is customized', async () => {
+      const originalWasmUrl = setup.ASSET_URLS.wasm;
+      setup.ASSET_URLS.wasm = 'https://custom.domain/pdftex.wasm';
+      mockExistsSync.mockReturnValue(true);
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        arrayBuffer: async () => new ArrayBuffer(4),
+      } as unknown as Response);
+      mockReadFileSync.mockReturnValue('var Glue = true;');
+
+      await setup.main([]);
+      expect(console.warn).not.toHaveBeenCalled();
+
+      setup.ASSET_URLS.wasm = originalWasmUrl;
+    });
+
+    it('should fail and exit 1 when --local is passed without a path argument', async () => {
+      mockExistsSync.mockReturnValue(true);
+      await setup.main(['--local']);
+
+      expect(console.error).toHaveBeenCalledWith('Setup failed:', 'Missing path argument for --local');
+      expect(process.exit).toHaveBeenCalledWith(1);
+    });
+
+    it('should handle non-Error thrown values in main catch block', async () => {
+      mockExistsSync.mockImplementation(() => {
+        throw 'String failure';
+      });
+
+      await setup.main([]);
+      expect(console.error).toHaveBeenCalledWith('Setup failed:', 'String failure');
+      expect(process.exit).toHaveBeenCalledWith(1);
     });
   });
 });

@@ -1,49 +1,81 @@
+/**
+ * CLI script (`scripts/build_fmt.ts`) for generating the pre-dumped `src/assets/tikz.fmt`
+ * binary using a local TeX Live distribution and {@link FormatGenerator}.
+ *
+ * @packageDocumentation
+ */
+
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TeXBridge } from '../src/bridge.js';
 import { FormatGenerator } from '../src/generator.js';
+import type { EmscriptenModuleFactory } from '../src/types.js';
 
-// --- MOCK BROWSER ENVIRONMENT ---
-// The upstream Emscripten glue code might expect these globals to exist.
-// We explicitly mock them to ensure the factory runs smoothly in Node.
-if (typeof globalThis.window === 'undefined') {
-  (globalThis as any).window = globalThis;
+/**
+ * Ensures `window` and `self` globals exist on `globalThis` when running Emscripten glue in Node.js.
+ *
+ * @param target - Target global object to polyfill.
+ */
+export function ensureBrowserGlobals(target: Record<string, unknown> = globalThis as Record<string, unknown>): void {
+  if (typeof target['window'] === 'undefined') {
+    target['window'] = target;
+  }
+  if (typeof target['self'] === 'undefined') {
+    target['self'] = target;
+  }
 }
-if (typeof globalThis.self === 'undefined') {
-  (globalThis as any).self = globalThis;
+
+ensureBrowserGlobals();
+
+/**
+ * Module shape expected when dynamically importing `tex_glue.js`.
+ */
+export interface GlueModuleExports {
+  /**
+   * Default exported Emscripten module factory.
+   */
+  default?: EmscriptenModuleFactory | unknown;
 }
 
 /**
- * Main build script execution.
- * Steps:
- * 1. Resolves paths for assets and local TeX distro.
- * 2. Imports the patched WASM glue code dynamically.
- * 3. Initializes the TeX Bridge.
- * 4. Runs the FormatGenerator.
+ * Default dynamic module loader for importing `tex_glue.js`.
+ *
+ * @param modulePath - Absolute path to the glue JS module.
+ * @returns A Promise resolving to the imported module namespace.
  */
-export async function runBuild() {
-  const args = process.argv.slice(2);
-  
-  if (args.length < 1) {
-    console.error("Usage: tsx scripts/build_fmt.ts <PATH_TO_LOCAL_TEXMF_DIST>");
-    console.error("Example: tsx scripts/build_fmt.ts /usr/share/texlive/texmf-dist");
+export async function defaultGlueImporter(modulePath: string): Promise<GlueModuleExports> {
+  return (await import(modulePath)) as GlueModuleExports;
+}
+
+/**
+ * Executes the format generation build workflow.
+ *
+ * @param args - Command-line arguments (defaults to `process.argv.slice(2)`).
+ * @param importer - Module loader function used to import `tex_glue.js`.
+ */
+export async function runBuild(
+  args: readonly string[] = process.argv.slice(2),
+  importer: (modulePath: string) => Promise<GlueModuleExports> = defaultGlueImporter
+): Promise<void> {
+  const texDistPath = args[0];
+  if (!texDistPath) {
+    console.error('Usage: tsx scripts/build_fmt.ts <PATH_TO_LOCAL_TEXMF_DIST>');
+    console.error('Example: tsx scripts/build_fmt.ts /usr/share/texlive/texmf-dist');
     process.exit(1);
+    return;
   }
 
-  const texDistPath = args[0];
   const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const assetsDir = path.join(projectRoot, 'src', 'assets');
   const gluePath = path.join(assetsDir, 'tex_glue.js');
   const outputFmtPath = path.join(assetsDir, 'tikz.fmt');
 
-  console.log(`Building tikz.fmt...`);
+  console.log('Building tikz.fmt...');
   console.log(`Source TeX Dist: ${texDistPath}`);
   console.log(`Glue Code: ${gluePath}`);
 
   try {
-    // Dynamic import of the glue code generated in Step 1
-    // We use a query param or absolute path to bypass some TS strictness involves
-    const glueModule = await import(gluePath);
+    const glueModule = await importer(gluePath);
     const factory = glueModule.default;
 
     if (typeof factory !== 'function') {
@@ -51,24 +83,20 @@ export async function runBuild() {
     }
 
     const bridge = new TeXBridge();
-    
-    // Initialize WASM
-    console.log("Initializing WASM Bridge...");
-    await bridge.init(factory);
 
-    // Initialize Generator
+    console.log('Initializing WASM Bridge...');
+    await bridge.init(factory as EmscriptenModuleFactory);
+
     const generator = new FormatGenerator(bridge, texDistPath);
-
-    // Run Generation
     await generator.generate(outputFmtPath);
-
-  } catch (err) {
-    console.error("Build Failed:", err);
+  } catch (err: unknown) {
+    console.error('Build Failed:', err);
     process.exit(1);
   }
 }
 
-// Execute if run as main script
+/* v8 ignore start */
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  runBuild();
+  void runBuild();
 }
+/* v8 ignore stop */

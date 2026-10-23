@@ -1,37 +1,68 @@
+/**
+ * CLI script (`scripts/setup.ts`) for downloading or copying the upstream `pdftex` WebAssembly
+ * binary and patching its Emscripten JavaScript glue code into a Promise-based factory.
+ *
+ * @packageDocumentation
+ */
+
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
- * SwiftLaTeX does not commit built artifacts to their repo.
- * Users must build the SwiftLaTeX/PdfTeX-WASM project manually or fork it and create releases.
- *
- * Default URLs below are placeholders. You should either:
- * 1. Run this script with `--local <path-to-swiftlatex-build>`
- * 2. Set TIKZ_WASM_URL and TIKZ_GLUE_URL environment variables.
- * 3. Update the constants below to point to your fork's release.
+ * Upstream download URLs for the WebAssembly binary and Emscripten glue code.
  */
+/* v8 ignore start */
 export const ASSET_URLS = {
-  wasm: process.env.TIKZ_WASM_URL || 'https://github.com/USER/REPO/releases/download/v1/pdftex.wasm',
-  glue: process.env.TIKZ_GLUE_URL || 'https://github.com/USER/REPO/releases/download/v1/PdfTeXEngine.js',
+  /**
+   * URL to download `pdftex.wasm`.
+   */
+  wasm: process.env['TIKZ_WASM_URL'] ?? 'https://github.com/USER/REPO/releases/download/v1/pdftex.wasm',
+  /**
+   * URL to download `PdfTeXEngine.js` glue code.
+   */
+  glue: process.env['TIKZ_GLUE_URL'] ?? 'https://github.com/USER/REPO/releases/download/v1/PdfTeXEngine.js',
 };
+/* v8 ignore stop */
 
+/**
+ * Local asset destination configuration.
+ */
 export const CONFIG = {
+  /**
+   * Absolute path to `src/assets`.
+   */
   assetsDir: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/assets'),
+  /**
+   * Filename for the WebAssembly binary inside `src/assets`.
+   */
   wasmPath: 'tex.wasm',
+  /**
+   * Filename for the patched Emscripten glue module inside `src/assets`.
+   */
   gluePath: 'tex_glue.js',
 };
 
+/**
+ * Ensures that the specified directory exists, creating it recursively if absent.
+ *
+ * @param dirPath - Directory path to check and create.
+ */
 export function ensureDirectory(dirPath: string): void {
   if (!fs.existsSync(dirPath)) {
     fs.mkdirSync(dirPath, { recursive: true });
-    // eslint-disable-next-line no-console
     console.log(`Created directory: ${dirPath}`);
   }
 }
 
+/**
+ * Downloads a binary file from a remote URL and saves it to disk.
+ *
+ * @param url - Remote HTTP/HTTPS URL to fetch.
+ * @param destPath - Destination file path on disk.
+ * @throws Error if the HTTP response status is not OK.
+ */
 export async function downloadFile(url: string, destPath: string): Promise<void> {
-  // eslint-disable-next-line no-console
   console.log(`Downloading ${url} -> ${destPath}...`);
   const response = await fetch(url);
 
@@ -43,18 +74,21 @@ export async function downloadFile(url: string, destPath: string): Promise<void>
   const buffer = Buffer.from(arrayBuffer);
   fs.writeFileSync(destPath, buffer);
 
-  // eslint-disable-next-line no-console
   console.log(`Saved ${buffer.byteLength} bytes to ${destPath}`);
 }
 
+/**
+ * Copies `pdftex.wasm` and `PdfTeXEngine.js` from a local SwiftLaTeX build directory.
+ *
+ * @param srcDir - Source directory containing `pdftex.wasm` and `PdfTeXEngine.js`.
+ * @param destDir - Target `src/assets` directory.
+ * @throws Error if either artifact is missing in `srcDir`.
+ */
 export async function copyLocal(srcDir: string, destDir: string): Promise<void> {
   console.log(`Copying artifacts from local build: ${srcDir}`);
 
   const srcWasm = path.join(srcDir, 'pdftex.wasm');
   const srcGlue = path.join(srcDir, 'PdfTeXEngine.js');
-  // Sanity check: SwiftLaTeX sometimes nests the wasm inside a pdftex.wasm folder?
-  // Based on tree, usually the build artifact is in the root or a dist folder.
-  // We try generic names.
 
   if (!fs.existsSync(srcWasm)) {
     throw new Error(`Local build missing WASM at: ${srcWasm}`);
@@ -66,18 +100,18 @@ export async function copyLocal(srcDir: string, destDir: string): Promise<void> 
   fs.copyFileSync(srcWasm, path.join(destDir, CONFIG.wasmPath));
   console.log(`Copied ${CONFIG.wasmPath}`);
 
-  // We copy glue to a temp file for patching
   fs.copyFileSync(srcGlue, path.join(destDir, 'temp_glue.js'));
   console.log(`Copied ${CONFIG.gluePath} (to temp)`);
 }
 
 /**
- * Patches the SwiftLaTeX Emscripten JS glue code.
+ * Patches the raw SwiftLaTeX Emscripten JS glue code into an ES module exporting
+ * a Promise-returning `TikZModuleFactory` function.
+ *
+ * @param rawJs - Raw upstream JavaScript glue code.
+ * @returns Patched ES module JavaScript string.
  */
 export function patchGlueCode(rawJs: string): string {
-  // SwiftLaTeX/Emscripten usually assigns to 'Module'.
-  // We wrap it in a factory.
-
   const header = `
 export default function TikZModuleFactory(moduleOverrides = {}) {
   return new Promise((resolve, reject) => {
@@ -97,14 +131,11 @@ export default function TikZModuleFactory(moduleOverrides = {}) {
     // --- START UPSTREAM CODE ---
 `;
 
-  // Filter out node-isms
   const content = rawJs
-      .replace(/require\(['"]fs['"]\)/g, '{}')
-      .replace(/require\(['"]path['"]\)/g, '{}')
-      // Fix: SwiftLaTeX sometimes uses 'this' at top level which is undefined in strict modules
-      .replace(/var Module=typeof Module!="undefined"\?Module:{};/g, 'var Module = moduleOverrides || {};')
-      // Prevent auto-execution if present
-      .replace(/if\(typeof Module!=='undefined'\)Module=/, '// Module=');
+    .replace(/require\(['"]fs['"]\)/g, '{}')
+    .replace(/require\(['"]path['"]\)/g, '{}')
+    .replace(/var Module=typeof Module!="undefined"\?Module:{};/g, 'var Module = moduleOverrides || {};')
+    .replace(/if\(typeof Module!=='undefined'\)Module=/, '// Module=');
 
   const footer = `
     // --- END UPSTREAM CODE ---
@@ -115,23 +146,28 @@ export default function TikZModuleFactory(moduleOverrides = {}) {
   return header + content + footer;
 }
 
-export async function main(): Promise<void> {
+/**
+ * Executes the setup workflow (remote download or `--local <dir>` copy, followed by glue patching).
+ *
+ * @param argv - CLI arguments (defaults to `process.argv.slice(2)`).
+ */
+export async function main(argv: readonly string[] = process.argv.slice(2)): Promise<void> {
   try {
     ensureDirectory(CONFIG.assetsDir);
 
-    const args = process.argv.slice(2);
-    const localFlagIndex = args.indexOf('--local');
+    const localFlagIndex = argv.indexOf('--local');
     const isLocal = localFlagIndex !== -1;
 
     if (isLocal) {
-      const srcPath = args[localFlagIndex + 1];
-      if (!srcPath) throw new Error("Missing path argument for --local");
+      const srcPath = argv[localFlagIndex + 1];
+      if (!srcPath) {
+        throw new Error('Missing path argument for --local');
+      }
       await copyLocal(srcPath, CONFIG.assetsDir);
     } else {
-      // Attempt download only if URLs look valid (not placeholders)
       if (ASSET_URLS.wasm.includes('https://github.com/USER/REPO')) {
-        console.warn("WARNING: Using placeholder URLs. Setup will likely fail.");
-        console.warn("Please build SwiftLaTeX/PdfTeX-WASM locally and run: npm run setup -- --local ../PdfTeX-WASM/");
+        console.warn('WARNING: Using placeholder URLs. Setup will likely fail.');
+        console.warn('Please build SwiftLaTeX/PdfTeX-WASM locally and run: npm run setup -- --local ../PdfTeX-WASM/');
       }
 
       const wasmDest = path.join(CONFIG.assetsDir, CONFIG.wasmPath);
@@ -141,7 +177,6 @@ export async function main(): Promise<void> {
       await downloadFile(ASSET_URLS.glue, glueDest);
     }
 
-    // Patch Glue
     const tempGlue = path.join(CONFIG.assetsDir, 'temp_glue.js');
     const glueDest = path.join(CONFIG.assetsDir, CONFIG.gluePath);
 
@@ -152,13 +187,14 @@ export async function main(): Promise<void> {
       console.log(`Patched glue code written to ${glueDest}`);
       fs.unlinkSync(tempGlue);
     }
-
   } catch (err: unknown) {
     console.error('Setup failed:', err instanceof Error ? err.message : String(err));
     process.exit(1);
   }
 }
 
+/* v8 ignore start */
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  main();
+  void main();
 }
+/* v8 ignore stop */

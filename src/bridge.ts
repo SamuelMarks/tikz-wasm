@@ -1,96 +1,128 @@
-import type { EmscriptenModule, EmscriptenModuleFactory } from './types.js';
+/**
+ * Emscripten WebAssembly bridge orchestrating interactions between JavaScript memory
+ * and the compiled `pdftex` WebAssembly engine.
+ *
+ * @packageDocumentation
+ */
+
+import type { EmscriptenFS, EmscriptenModule, EmscriptenModuleFactory } from './types.js';
+import { TikzInitializationError } from './errors.js';
 
 /**
- * TeXBridge orchestrates the interactions between JS memory and the
- * Emscripten-compiled TeX WASM binary.
+ * `TeXBridge` wraps the Emscripten-compiled TeX WebAssembly module, providing
+ * strongly typed methods for VFS manipulation, engine invocation, and log capture.
  */
 export class TeXBridge {
+  /**
+   * Active Emscripten module instance, or `null` prior to {@link TeXBridge.init}.
+   */
   private module: EmscriptenModule | null = null;
+
+  /**
+   * Accumulated stdout and stderr log lines from the most recent operation.
+   */
   private logs: string[] = [];
 
   /**
-   * Initializes the WASM module.
-   * @param factory The factory function provided by the auto-generated Emscripten JS.
-   * @param wasmBinary The raw Uint8Array of the .wasm file.
+   * Initializes the WebAssembly module using the provided Emscripten factory.
+   *
+   * @param factory - The factory function produced by the patched Emscripten glue code.
+   * @param wasmBinary - Optional raw `Uint8Array` of the `tex.wasm` binary.
    */
   async init(factory: EmscriptenModuleFactory, wasmBinary?: Uint8Array): Promise<void> {
-    // SwiftLaTeX/Emscripten usually takes 'wasmBinary' in the config object
-    // to bypass automatic HXR fetching.
     this.module = await factory({
-      print: (msg: string) => this.logs.push(msg),
-      printErr: (msg: string) => this.logs.push(`ERR: ${msg}`),
+      print: (msg: string): void => {
+        this.logs.push(msg);
+      },
+      printErr: (msg: string): void => {
+        this.logs.push(`ERR: ${msg}`);
+      },
       ...(wasmBinary ? { wasmBinary } : {})
     });
   }
 
   /**
-   * Writes a file to the Virtual File System (MEMFS).
-   * @param filename name of the file (e.g., "texmf.cnf")
-   * @param content content as string or binary buffer
+   * Writes a file to the Emscripten Virtual File System (`MEMFS`).
+   *
+   * @param filename - Path or filename inside the VFS (e.g., `"texmf.cnf"`).
+   * @param content - File content as a UTF-8 string or `Uint8Array`.
    */
   writeFile(filename: string, content: string | Uint8Array): void {
-    this.ensureInitialized();
-    this.module!.FS.writeFile(filename, content);
+    const mod = this.getModule();
+    mod.FS.writeFile(filename, content);
   }
 
   /**
-   * Runs the TeX engine through the callMain entry point.
-   * @param inputFilename The file waiting in VFS to be processed
-   * @returns Success boolean
+   * Runs the TeX engine via its `callMain` entrypoint in non-interactive mode.
+   *
+   * @param inputFilename - The `.tex` file waiting in the VFS to be processed.
+   * @returns `true` if TeX exited with code `0`, `false` otherwise.
    */
   runTeX(inputFilename: string): boolean {
-    this.ensureInitialized();
+    const mod = this.getModule();
     this.logs = []; // Reset logs for this run
 
     try {
-      // SwiftLaTeX acts as a PDFTeX engine.
-      // We pass specific flags to ensure we don't drop to shell or interaction mode.
-      const exitCode = this.module!.callMain([
+      const exitCode = mod.callMain([
         '-interaction=nonstopmode',
         '-halt-on-error',
         inputFilename
       ]);
       return exitCode === 0;
-    } catch (e) {
-      // Emscripten treats exit(1) as an exception in some configurations
+    } catch (e: unknown) {
       if (e instanceof Error && e.message.includes('status: 1')) {
         return false;
       }
-      this.logs.push(`CRITICAL: WASM Exception: ${e}`);
+      const detail = e instanceof Error ? e.message : String(e);
+      this.logs.push(`CRITICAL: WASM Exception: ${detail}`);
       return false;
     }
   }
 
   /**
-   * Reads a file from the VFS.
-   * @param filename file to read
-   * @returns Uint8Array of the file content
-   * @throws Error if file does not exist
+   * Reads a binary file from the Emscripten Virtual File System.
+   *
+   * @param filename - Path to the file in the VFS.
+   * @returns The binary file content as a `Uint8Array`.
+   * @throws Error if the file does not exist in the VFS.
    */
   readFile(filename: string): Uint8Array {
-    this.ensureInitialized();
+    const mod = this.getModule();
     try {
-      return this.module!.FS.readFile(filename, { encoding: undefined });
+      return mod.FS.readFile(filename, { encoding: undefined });
     } catch {
       throw new Error(`File ${filename} not found in VFS`);
     }
   }
 
   /**
-   * Helper to retrieve logs.
+   * Returns a shallow copy of the captured stdout/stderr log lines.
+   *
+   * @returns Array of captured log strings.
    */
   getLogs(): string[] {
     return [...this.logs];
   }
 
-  getFS() {
-    this.ensureInitialized();
-    return this.module!.FS;
+  /**
+   * Returns the underlying Emscripten Virtual File System (`FS`) interface.
+   *
+   * @returns The initialized {@link EmscriptenFS} object.
+   */
+  getFS(): EmscriptenFS {
+    return this.getModule().FS;
   }
 
-  private ensureInitialized(): void {
+  /**
+   * Ensures the Emscripten module is initialized and returns it with narrowed type.
+   *
+   * @returns The initialized {@link EmscriptenModule}.
+   * @throws {@link TikzInitializationError} if {@link TeXBridge.init} has not been called.
+   */
+  private getModule(): EmscriptenModule {
     if (!this.module) {
-      throw new Error('TeXBridge not initialized. Call init() first.');
+      throw new TikzInitializationError('TeXBridge not initialized. Call init() first.');
     }
+    return this.module;
   }
 }
